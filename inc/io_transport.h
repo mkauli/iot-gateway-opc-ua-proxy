@@ -61,8 +61,7 @@ decl_inline_2(int32_t, io_connection_send,
     io_message_t*, message
 )
 {
-    if (!connection)
-        return er_fault;
+    chk_arg_fault_return(connection);
     dbg_assert_ptr(connection->on_send);
     return connection->on_send(connection->context, message);
 }
@@ -95,7 +94,7 @@ decl_inline_1(void, io_connection_free,
 
 //
 // Connection events
-// 
+//
 typedef enum io_connection_event_t
 {
     io_connection_received,               // Send when message received
@@ -110,15 +109,18 @@ io_connection_event_t;
 typedef int32_t (*io_connection_cb_t)(
     void* context,
     io_connection_event_t ev,
-    io_message_t* message
+    io_message_t* message,
+    int32_t last_error,
+    uint32_t* delay
     );
 
-// 
+//
 // Create connection on transport
 //
 typedef int32_t (*io_transport_create_connection_t)(
     void* context,
     prx_ns_entry_t* entry,
+    io_codec_id_t codec_id,
     io_connection_cb_t handler_cb,
     void* handler_ctx,
     prx_scheduler_t* scheduler,
@@ -137,20 +139,34 @@ struct io_transport
 //
 // Create connection from transport interface
 //
-decl_inline_6(int32_t, io_transport_create,
+decl_inline_7(int32_t, io_transport_create,
     io_transport_t*, transport,
     prx_ns_entry_t*, entry,
+    io_codec_id_t, codec_id,
     io_connection_cb_t, cb,
     void*, context,
     prx_scheduler_t*, scheduler,
     io_connection_t**, connection
 )
 {
-    if (!transport)
-        return er_fault;
+    chk_arg_fault_return(transport);
     dbg_assert_ptr(transport->on_create);
-    return transport->on_create(
-        transport->context, entry, cb, context, scheduler, connection);
+    return transport->on_create(transport->context,
+        entry, codec_id, cb, context, scheduler, connection);
 }
+
+//
+// Get transport for transport type
+//
+decl_internal_1(io_transport_t*, io_transport_get,
+    prx_transport_type_t, type
+);
+
+//
+// Get transport capabilities bit mask
+//
+decl_internal_0(uint32_t, io_transport_get_caps,
+    void
+);
 
 #endif // _io_transport_h_

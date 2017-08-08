@@ -14,18 +14,17 @@
 
 #define INITIAL_POOL_SIZE 128
 
-// #define LOG_VERBOSE
-
 //
 // Schedules ...
 //
 struct prx_scheduler
 {
-    prx_buffer_factory_t* task_pool;        // Pool of task entries
+    prx_buffer_factory_t* task_pool;       // Pool of task entries
     DLIST_ENTRY now;     // Immediately queued tasks in fifo order
     DLIST_ENTRY later;         // queued tasks ordered by deadline
     rw_lock_t lock;
     THREAD_HANDLE worker_thread;
+    tid_t thread_id;
     signal_t* wakeup;                     // Idle interrupt signal
     bool should_run;     // Whether the schedule thread is running
     log_t log;
@@ -41,7 +40,7 @@ typedef struct prx_task_entry
     const char* name;                // Name of task for debugging
     ticks_t queued;       // When the task was queued to scheduler
     ticks_t deadline;                   // When it needs to be run
-    prx_task_t task;                                // Task handler
+    prx_task_t task;                               // Task handler
     void* context;                    // this pointer passed to it
     DLIST_ENTRY link;
 #ifdef DEBUG
@@ -117,8 +116,8 @@ static void prx_scheduler_log_queue(
 #if defined(UNIT_TEST)
         (void)log;
 #elif defined(DEBUG)
-        log_info(log, "%d [%s(%p)] (%s:%d) due:%u added:%u",
-            index, next->name, next->context, next->func, next->line, 
+        log_debug(log, "%d [%s(%p)] (%s:%d) due:%u added:%u",
+            index, next->name, next->context, next->func, next->line,
             next->deadline, next->queued);
 #else
         log_debug(log, "%d [%s(%p)] due:%u added:%u",
@@ -180,7 +179,7 @@ static prx_task_entry_t* prx_scheduler_get_next(
                 // Scheduled item hit deadline, run now
                 DList_RemoveEntryList(&candidate->link);
 
-                log_debug(scheduler->log, "Task %s with skew: %u", 
+                log_debug(scheduler->log, "Task %s with skew: %u",
                     candidate->name, (uint32_t)abs(*idle));
                 *idle = 0;
                 break;
@@ -207,8 +206,8 @@ static prx_task_entry_t* prx_scheduler_get_next(
     return candidate;
 }
 
-// 
-// Runs the amqp protocol thread for one connection
+//
+// Runs the scheduler tasks queued
 //
 static int32_t prx_scheduler_work(
     void* context
@@ -219,6 +218,7 @@ static int32_t prx_scheduler_work(
     prx_task_entry_t* next;
     prx_scheduler_t* scheduler = (prx_scheduler_t*)context;
     dbg_assert_ptr(scheduler);
+    scheduler->thread_id = tid_self();
 
     while (true)
     {
@@ -229,8 +229,8 @@ static int32_t prx_scheduler_work(
             next->task(next->context);
             log_debug(scheduler->log, "Task %s took %u ms",
                 next->name, (uint32_t)(ticks_get() - now));
-
             prx_buffer_release(scheduler->task_pool, next);
+            mem_check();
         }
         else if (!scheduler->should_run && idle_timeout == -1)
         {
@@ -246,7 +246,18 @@ static int32_t prx_scheduler_work(
                 (uint32_t)(ticks_get() - now));
         }
     }
+    mem_check();
     return 0;
+}
+
+//
+// Checks whether code is running in this scheduler.
+//
+bool prx_scheduler_runs_me(
+    prx_scheduler_t* scheduler
+)
+{
+    return tid_equal(tid_self(), scheduler->thread_id);
 }
 
 //
@@ -281,9 +292,9 @@ int32_t prx_scheduler_create(
         DList_InitializeListHead(&scheduler->later);
 
         memset(&config, 0, sizeof(config));
-        config.initial_count = INITIAL_POOL_SIZE;
+        config.increment_count = INITIAL_POOL_SIZE;
 
-        result = prx_fixed_pool_create("scheduler", sizeof(prx_task_entry_t), 
+        result = prx_fixed_pool_create("scheduler", sizeof(prx_task_entry_t),
             &config, &scheduler->task_pool);
         if (result != er_ok)
             break;
@@ -301,14 +312,14 @@ int32_t prx_scheduler_create(
             &scheduler->worker_thread, prx_scheduler_work, scheduler);
         if (THREADAPI_OK != thread_result)
         {
-            result = er_fault;
+            result = er_fatal;
             scheduler->should_run = false;
             break;
         }
 
         *created = scheduler;
         return er_ok;
-    } 
+    }
     while (0);
 
     prx_scheduler_release(scheduler, NULL);
@@ -331,9 +342,9 @@ intptr_t prx_scheduler_queue(
     bool inserted;
     prx_task_entry_t* entry, *next;
 
-    if (!scheduler || !task)
-        return er_fault;
-        
+    chk_arg_fault_return(scheduler);
+    chk_arg_fault_return(task);
+
     entry = (prx_task_entry_t*)prx_buffer_alloc(scheduler->task_pool, NULL);
     if (!entry)
     {
@@ -364,7 +375,7 @@ intptr_t prx_scheduler_queue(
         // Insert ordered
         inserted = false;
 
-        for (PDLIST_ENTRY p = scheduler->later.Flink; 
+        for (PDLIST_ENTRY p = scheduler->later.Flink;
             p != &scheduler->later; p = p->Flink)
         {
             next = containingRecord(p, prx_task_entry_t, link);
@@ -383,12 +394,11 @@ intptr_t prx_scheduler_queue(
             DList_InsertTailList(&scheduler->later, &entry->link);
         }
     }
-    rw_lock_exit_w(scheduler->lock);
-
 #ifdef LOG_VERBOSE
     prx_scheduler_log_queue(scheduler->log, &scheduler->now);
     prx_scheduler_log_queue(scheduler->log, &scheduler->later);
 #endif
+    rw_lock_exit_w(scheduler->lock);
     prx_scheduler_interrupt(scheduler);
     return (intptr_t)entry;
 }
@@ -403,8 +413,7 @@ int32_t prx_scheduler_kill(
 {
     prx_task_entry_t* next;
 
-    if (!scheduler)
-        return er_fault;
+    chk_arg_fault_return(scheduler);
 
     rw_lock_enter_w(scheduler->lock);
     next = prx_scheduler_remove_by_id(&scheduler->now, id);

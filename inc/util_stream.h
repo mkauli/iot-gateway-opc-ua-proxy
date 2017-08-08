@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-#ifndef _util_codec_h_
-#define _util_codec_h_
+#ifndef _util_stream_h_
+#define _util_stream_h_
 
 #include "common.h"
 #include "io_stream.h"
@@ -30,7 +30,7 @@ typedef struct io_dynamic_buffer_stream
     prx_buffer_factory_t* pool;                // dynamic pool
     size_t increment;   // Grow buffer by this number of bytes
     uint8_t* out;                           // != null on fini
-    size_t out_len;                                    // Size 
+    size_t out_len;                                    // Size
 }
 io_dynamic_buffer_stream_t;
 
@@ -40,12 +40,13 @@ io_dynamic_buffer_stream_t;
 typedef struct io_file_stream
 {
     io_stream_t itf;           // codec stream interface
-    void* fd;
+    void* in_fd;
+    void* out_fd;
 }
 io_file_stream_t;
 
 //
-// Initialize a fixed in/out buffer memory stream 
+// Initialize a fixed in/out buffer memory stream
 //
 decl_internal_5(io_stream_t*, io_fixed_buffer_stream_init,
     io_fixed_buffer_stream_t*, mem,
@@ -56,7 +57,7 @@ decl_internal_5(io_stream_t*, io_fixed_buffer_stream_init,
 );
 
 //
-// Initialize a dynamic out buffer memory stream 
+// Initialize a dynamic out buffer memory stream
 //
 decl_internal_3(io_stream_t*, io_dynamic_buffer_stream_init,
     io_dynamic_buffer_stream_t*, mem,
@@ -65,12 +66,12 @@ decl_internal_3(io_stream_t*, io_dynamic_buffer_stream_init,
 );
 
 //
-// Initialize a file stream 
+// Initialize a file stream
 //
 decl_internal_3(io_stream_t*, io_file_stream_init,
     io_file_stream_t*, fs,
-    const char*, file_name,
-    const char*, mode
+    const char*, in_file,
+    const char*, out_file
 );
 
-#endif // _util_codec_h_
+#endif // _util_stream_h_

@@ -26,8 +26,10 @@ typedef struct io_message io_message_t;
 //
 // Create message factory - a pool of reusable messages
 //
-decl_internal_6(int32_t, io_message_factory_create,
-    size_t, pool_size,
+decl_internal_8(int32_t, io_message_factory_create,
+    const char*, name,
+    size_t, initial_pool_size,
+    size_t, max_pool_size,
     size_t, low_watermark,
     size_t, high_watermark,
     prx_buffer_pool_cb_t, cb,
@@ -43,13 +45,21 @@ decl_internal_1(void, io_message_factory_free,
 );
 
 //
-// Createnew  message
+// Create new  message
 //
 decl_internal_5(int32_t, io_message_create,
     io_message_factory_t*, factory,
     int32_t, type,
     io_ref_t*, source,
     io_ref_t*, target,
+    io_message_t**, message
+);
+
+//
+// Create empty message for decoding
+//
+decl_internal_2(int32_t, io_message_create_empty,
+    io_message_factory_t*, factory,
     io_message_t**, message
 );
 
@@ -66,15 +76,7 @@ decl_internal_2(int32_t, io_message_clone,
 //
 decl_internal_2(int32_t, io_encode_message,
     io_codec_ctx_t*, ctx,
-    io_message_t*, message
-);
-
-//
-// Create empty message for decoding
-//
-decl_internal_2(int32_t, io_message_create_empty,
-    io_message_factory_t*, factory,
-    io_message_t**, message
+    const io_message_t*, message
 );
 
 //
@@ -108,7 +110,6 @@ decl_internal_1(void, io_message_release,
     io_message_t*, message
 );
 
-
 //
 // Proxy protocol, defines content sent to rpc socket communication.
 // More explanation per content item below.
@@ -117,7 +118,6 @@ decl_internal_1(void, io_message_release,
 //
 
 decl_g(const uint32_t, io_message_type_ping,                    10);
-decl_g(const uint32_t, io_message_type_resolve,                 11);
 decl_g(const uint32_t, io_message_type_link,                    12);
 decl_g(const uint32_t, io_message_type_setopt,                  13);
 decl_g(const uint32_t, io_message_type_getopt,                  14);
@@ -136,9 +136,9 @@ decl_internal_1(const char*, io_message_type_as_string,
 );
 
 //
-// Ping messages, are used to ping hosts on proxys. Ping requests 
-// are broadcasts containing a proxy address to ping. Responses 
-// are only sent when host was reached. Responses include MAC 
+// Ping messages, are used to ping hosts on proxys. Ping requests
+// are broadcasts containing a proxy address to ping. Responses
+// are only sent when host was reached. Responses include MAC
 // address to uniquely identify the target, and the latency.
 //
 
@@ -163,37 +163,8 @@ typedef struct io_ping_response
 io_ping_response_t;
 
 //
-// Adress resolution are unicast requests that allow a client
-// to do a getaddrinfo like address resolution.  Returned address
-// are only valid on the proxy, not globally.
-//
-
-//
-// Resolve request
-//
-typedef struct io_resolve_request
-{
-    prx_address_family_t family;
-    uint32_t flags;
-    uint16_t port;            // In host byte order, not network
-    uint16_t reserved;
-    char host[MAX_HOST_LENGTH];
-}
-io_resolve_request_t;
-
-//
-// Resolve response
-//
-typedef struct io_resolve_response
-{
-    prx_size_t result_count;
-    prx_addrinfo_t* results;   // Call prx_free_addrinfo
-}
-io_resolve_response_t;
-
-//
-// Link requests are used to create a link between caller and 
-// host:port in the form of a proxied socket.  Sockets are 
+// Link requests are used to create a link between caller and
+// host:port in the form of a proxied socket.  Sockets are
 // opened according to the socket properties passed.  Future
 // versions of link request messages will contain a connection
 // string that binds the link to a unique device identity.
@@ -221,12 +192,14 @@ typedef struct io_link_response
     io_ref_t link_id;
     prx_socket_address_t local_address;
     prx_socket_address_t peer_address;
+    uint32_t transport_caps;
+    uint32_t max_send;                                // added 1.0.2
 }
 io_link_response_t;
 
 //
 // Allows to set options on a link, which correspond to local
-// socket options which have a value of less than 64 bit (not 
+// socket options which have a value of less than 64 bit (not
 // multicast join/leave, which are currently not supported).
 // Responses are exception responses only (i.e. The error_code
 // member of message is set to something other than er_ok.
@@ -237,13 +210,13 @@ io_link_response_t;
 //
 typedef struct io_setopt_request
 {
-    prx_socket_option_value_t so_val;
+    prx_property_t so_val;
 }
 io_setopt_request_t;
 
 //
-// Allows to retrieve an option value from the proxied link. Not 
-// all options can be retrieved.  Responses contain the option 
+// Allows to retrieve an option value from the proxied link. Not
+// all options can be retrieved.  Responses contain the option
 // value.
 //
 
@@ -261,12 +234,12 @@ io_getopt_request_t;
 //
 typedef struct io_getopt_response
 {
-    prx_socket_option_value_t so_val;
+    prx_property_t so_val;
 }
 io_getopt_response_t;
 
 //
-// Open requests open a channel for asynchronous messages on the 
+// Open requests open a channel for asynchronous messages on the
 // link, which mainly include data messages.  For this the open
 // request carries a connection string that points to an endpoint.
 // Responses are exception responses only (i.e. error_code
@@ -280,26 +253,30 @@ io_getopt_response_t;
 typedef struct io_open_request
 {
     io_ref_t stream_id;
+    int32_t encoding;
+    int32_t type;
     const char* connection_string;
     bool polled;
+    uint32_t max_recv;
 }
 io_open_request_t;
 
 //
 // Poll messages allow streaming in polled mode (see open). A poll
-// request specifies how long to wait for data to arrive. A response 
+// request specifies how long to wait for data to arrive. A response
 // does not contain a timeout.
 //
 typedef struct io_poll_message
 {
+    uint64_t sequence_number;
     uint64_t timeout;
 }
 io_poll_message_t;
 
 //
 // Stream data messages are sent either as a request to write, a
-// response to a poll request, or unsolicited on an asynchronous 
-// stream. They contain the last successful read of the underlying 
+// response to a poll request, or unsolicited on an asynchronous
+// stream. They contain the last successful read of the underlying
 // proxied socket.
 //
 
@@ -308,18 +285,20 @@ io_poll_message_t;
 //
 typedef struct io_data_message
 {
+    uint64_t sequence_number;
     prx_socket_address_t source_address;
-    prx_size_t control_buffer_length;
+    size_t control_buffer_length;
     uint8_t* control_buffer;
-    prx_size_t buffer_length;
+    size_t buffer_length;
     uint8_t* buffer;
+    int32_t flags;                                    // added 1.0.2
 }
 io_data_message_t;
 
 //
-// Close requests request closing of the channel and underlying 
-// link i.e. there is no link close message. The response error 
-// code has a socket error code, e.g. if the socket was closed 
+// Close requests request closing of the channel and underlying
+// link i.e. there is no link close message. The response error
+// code has a socket error code, e.g. if the socket was closed
 // from remote side.
 //
 
@@ -339,19 +318,18 @@ io_close_response_t;
 //
 // A proxy protocol message is a union of all protocol messages
 //
-struct io_message 
+struct io_message
 {
     io_ref_t source_id;             // Source proxy address and
     io_ref_t proxy_id;     // Proxy the message is sent through
     io_ref_t target_id;            // Target address of message
+    uint32_t seq_id;         // A Sequence number for debugging
     int32_t error_code;                            // Exception
     bool is_response;           // Request or response message?
     uint32_t type;               // Identifies the content type
     union {                        // Message content structure
     io_ping_request_t ping_request;
     io_ping_response_t ping_response;
-    io_resolve_request_t resolve_request;
-    io_resolve_response_t resolve_response;
     io_link_request_t link_request;
     io_link_response_t link_response;
     io_setopt_request_t setopt_request;

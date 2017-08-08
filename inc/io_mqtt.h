@@ -10,12 +10,23 @@
 #include "prx_sched.h"
 
 //
+// Mqtt quality of service
+//
+typedef enum io_mqtt_qos
+{
+    io_mqtt_qos_at_most_once,
+    io_mqtt_qos_at_least_once,
+    io_mqtt_qos_exactly_once
+}
+io_mqtt_qos_t;
+
+//
 // Mqtt connection
 //
 typedef struct io_mqtt_connection io_mqtt_connection_t;
 
 //
-// Mqtt subscription 
+// Mqtt subscription
 //
 typedef struct io_mqtt_subscription io_mqtt_subscription_t;
 
@@ -59,11 +70,13 @@ decl_internal_5(int32_t, io_mqtt_connection_subscribe,
 // Reconnect callback
 //
 typedef bool (*io_mqtt_connection_reconnect_t)(
-    void* context
+    void* context,
+    int32_t last_error,
+    uint32_t* back_off_in_seconds
     );
 
 //
-// and call connect on the connection 
+// and call connect on the connection
 //
 decl_internal_3(int32_t, io_mqtt_connection_connect,
     io_mqtt_connection_t*, connection,
@@ -115,10 +128,11 @@ typedef void (*io_mqtt_publish_complete_t)(
 //
 // Publish data
 //
-decl_internal_7(int32_t, io_mqtt_connection_publish,
+decl_internal_8(int32_t, io_mqtt_connection_publish,
     io_mqtt_connection_t*, connection,
     const char*, uri,
     io_mqtt_properties_t*, properties,
+    io_mqtt_qos_t, qos,
     const uint8_t*, body,
     size_t, body_len,
     io_mqtt_publish_complete_t, cb,
@@ -126,7 +140,15 @@ decl_internal_7(int32_t, io_mqtt_connection_publish,
 );
 
 //
-// Unsubscribe when done with subscription 
+// Enable / Disable subscription
+//
+decl_public_2(int32_t, io_mqtt_subscription_receive,
+    io_mqtt_subscription_t*, subscription,
+    bool, flow_on_off
+);
+
+//
+// Unsubscribe subscription when done with it
 //
 decl_internal_1(void, io_mqtt_subscription_release,
     io_mqtt_subscription_t*, subscription

@@ -1,13 +1,12 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <VersionPrefix>0.2.2</VersionPrefix>
-    <TargetFrameworks>netcoreapp1.0;netcoreapp1.1;net46</TargetFrameworks>
+    <VersionPrefix>1.0.3</VersionPrefix>
+    <TargetFrameworks>netcoreapp1.1</TargetFrameworks>
     <AssemblyName>Client</AssemblyName>
     <OutputType>Exe</OutputType>
     <PackageId>Client</PackageId>
-    <RuntimeFrameworkVersion Condition=" '$(TargetFramework)' == 'netcoreapp1.0' ">1.0.4</RuntimeFrameworkVersion>
-    <RuntimeFrameworkVersion Condition=" '$(TargetFramework)' == 'netcoreapp1.1' ">1.1.1</RuntimeFrameworkVersion>
+    <RuntimeFrameworkVersion Condition=" '$(TargetFramework)' == 'netcoreapp1.1' ">1.1.2</RuntimeFrameworkVersion>
     <GenerateAssemblyConfigurationAttribute>false</GenerateAssemblyConfigurationAttribute>
     <GenerateAssemblyTitleAttribute>true</GenerateAssemblyTitleAttribute>
     <GenerateAssemblyDescriptionAttribute>true</GenerateAssemblyDescriptionAttribute>
@@ -17,21 +16,14 @@
     <GenerateAssemblyInformationalVersionAttribute>true</GenerateAssemblyInformationalVersionAttribute>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Perf|net46|AnyCPU'" />
-
   <ItemGroup>
     <ProjectReference Include="..\..\..\provider\relay\src\Microsoft.Azure.Devices.Proxy.Relay\Microsoft.Azure.Devices.Proxy.Relay.csproj" />
-    <ProjectReference Include="..\..\src\Microsoft.Azure.Devices.Opc.Ua.Proxy\Microsoft.Azure.Devices.Opc.Ua.Proxy.csproj" />
+    <ProjectReference Include="..\..\..\provider\webapp\test\Host\Microsoft.Azure.Devices.Proxy.Kestrel.csproj" />
+    <ProjectReference Include="..\..\src\Microsoft.Azure.Devices.Proxy.Opc.Ua\Microsoft.Azure.Devices.Proxy.Opc.Ua.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Core" Version="0.2.2" />
-    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.SDK" Version="0.2.2" />
-  </ItemGroup>
-
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net46' ">
-    <Reference Include="System" />
-    <Reference Include="Microsoft.CSharp" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua" Version="0.4.1" />
   </ItemGroup>
 
 </Project>

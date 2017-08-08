@@ -6,7 +6,6 @@
 #include "prx_types.h"
 #include "util_misc.h"
 #include "util_string.h"
-#include "util_handle.h"
 #include "io_proto.h"
 #include "io_host.h"
 
@@ -14,7 +13,6 @@ int ____i = 0;
 
 #if 0
 
-#include "azure_c_shared_utility/agenttime.h"
 #include "azure_c_shared_utility/refcount.h"
 
 //
@@ -26,7 +24,7 @@ typedef struct prx_client_socket
     io_ref_t c_addr;                    // Address sock is bound to
     io_ref_t r_addr;                         // Remote target address
 
-    int32_t sock_fd;             
+    int32_t sock_fd;
     prx_socket_properties_t props;          // Properties of the socket
     prx_socket_address_t r_name;         // Remote bound socket address
     prx_socket_address_t r_peer;          // Remote peer socket address
@@ -55,7 +53,7 @@ DEFINE_REFCOUNT_TYPE(prx_client_socket_t);
 // Note: Handle map must have been inited
 
 //
-// Global state for aprx_client_socket
+// Global state for prx_client_socket
 //
 static struct
 {
@@ -70,12 +68,12 @@ global_state = { 0 };
 #define prx_client_socket_log_error(s, FMT, ...) \
     log_error(s->log, "V-Socket " IO_REF_FMT " (c: %p, if: " IO_REF_FMT ") " FMT, \
         IO_REF_PRINT(&s->r_addr), NULL/*s->stream*/, IO_REF_PRINT(&s->c_addr), __VA_ARGS__ );
-#define prx_client_socket_log_info(s, FMT, ...) \
-    log_info(s->log, "V-Socket " IO_REF_FMT " (c: %p, if: " IO_REF_FMT ") " FMT, \
+#define prx_client_socket_log_trace(s, FMT, ...) \
+    log_trace(s->log, "V-Socket " IO_REF_FMT " (c: %p, if: " IO_REF_FMT ") " FMT, \
         IO_REF_PRINT(&s->r_addr), NULL/*s->stream*/, IO_REF_PRINT(&s->c_addr), __VA_ARGS__ );
 
 //
-// Release the socket 
+// Release the socket
 //
 static void prx_client_socket_release(
     prx_client_socket_t* sock
@@ -178,14 +176,14 @@ static prx_client_socket_t* prx_client_socket_get_by_id(
     sock = (prx_client_socket_t*)handle_map_get_pointer(id);
     if (!sock)
     {
-        log_error(NULL, 
+        log_error(NULL,
             "Virtual socket handle %d is not valid, it was likely closed.", id);
         return NULL;
     }
 
     if (check_open && !sock->connected)
     {
-        prx_client_socket_log_error(sock, 
+        prx_client_socket_log_error(sock,
             "Attempt to operate on closed sock (id:%d).", id);
         return NULL;
     }
@@ -237,7 +235,7 @@ static int32_t prx_client_socket_create_channel(
 )
 {
     int32_t result;
-    
+
     // Assign a new channel/session id per created channel
     result = io_channel_create(NULL, &sock->r_addr, &sock->l_addr,
         message_type, channel);
@@ -313,7 +311,7 @@ static void prx_client_socket_unlink(
         __io_proto_pack(message, void_request, sock->log);
         if (result != er_ok)
         {
-            (void)io_channel_abort_write(control, message); 
+            (void)io_channel_abort_write(control, message);
             break;
         }
         // Just wait for it to be sent, then we are done...
@@ -346,12 +344,12 @@ static int32_t prx_client_socket_link(
 
     dbg_assert_ptr(host);
     dbg_assert_ptr(sock);
-    dbg_assert(sock->itf && !io_ref_equals(&sock->c_addr, &io_ref_null), 
+    dbg_assert(sock->itf && !io_ref_equals(&sock->c_addr, &io_ref_null),
         "No interface selected");
     dbg_assert(!sock->connected && io_ref_equals(&sock->r_addr, &io_ref_null),
         "Connected or remote address already set");
     do
-    {   
+    {
         result = prx_client_socket_create_channel(sock, io_message_type_link, &control);
         if (result != er_ok)
             break;
@@ -359,8 +357,8 @@ static int32_t prx_client_socket_link(
         memset(&link_request, 0, sizeof(link_request));
 
         //
-        // The handshake includes sending the sock's properties which 
-        // include requested address and flags, and receiving back the real 
+        // The handshake includes sending the sock's properties which
+        // include requested address and flags, and receiving back the real
         // addresses as response.
         //
         memcpy(&link_request.props, &sock->props, sizeof(link_request.props));
@@ -433,7 +431,7 @@ static int32_t prx_client_socket_open(
         result = io_ref_new(&open_request.stream_id);
         if (result != er_ok)
             break;
-        result = io_channel_create(&sock->r_addr, &open_request.stream_id, 
+        result = io_channel_create(&sock->r_addr, &open_request.stream_id,
             &sock->l_addr, io_message_type_data, &sock->stream);
         if (result != er_ok)
         {
@@ -458,7 +456,7 @@ static int32_t prx_client_socket_open(
 
     if (result != er_ok)
     {
-        prx_client_socket_log_error(sock, 
+        prx_client_socket_log_error(sock,
             "Failed to send/receive open request/response (%s).",
             prx_err_string(result));
 
@@ -490,7 +488,7 @@ static int32_t prx_client_socket_connect_bound(
     dbg_assert_ptr(sock);
     dbg_assert_ptr(sock->host);
     dbg_assert_ptr(!sock->stream);
-    dbg_assert(!io_ref_equals(&sock->c_addr, &io_ref_null), 
+    dbg_assert(!io_ref_equals(&sock->c_addr, &io_ref_null),
         "No interface selected");
     dbg_assert_ptr(!sock->itf);
     do
@@ -517,7 +515,7 @@ static int32_t prx_client_socket_connect_bound(
             break;
 
         return er_ok;
-    } 
+    }
     while (0);
 
     if (host)
@@ -542,8 +540,8 @@ static int32_t prx_client_socket_connect_local(
 {
     int32_t result;
 
-    if (!r_addr || !sock)
-        return er_fault;
+    chk_arg_fault_return(r_addr);
+    chk_arg_fault_return(sock);
     if (!sock->host)
         return er_bad_state;
     if (sock->stream)
@@ -555,7 +553,7 @@ static int32_t prx_client_socket_connect_local(
 
         io_ref_copy(r_addr, &sock->r_addr);
 
-        // Bind the socket to a stream channel 
+        // Bind the socket to a stream channel
         result = prx_client_socket_create_channel(
             sock, io_message_type_data, &sock->stream);
 
@@ -601,7 +599,7 @@ static int32_t prx_client_socket_connect_unbound(
         // If no routes configured, use all interfaces
         result = prx_ns_entry_get_routes(host, &routes);
         if (result == er_not_found)
-            result = prx_ns_get_entry_by_type(prx_host_get_ns(sock->host), 
+            result = prx_ns_get_entry_by_type(prx_host_get_ns(sock->host),
                 prx_ns_entry_type_proxy, &routes);
         if (result != er_ok)
             break;
@@ -652,7 +650,7 @@ static int32_t prx_client_socket_connect_unbound(
         while (true)
         {
             // Ping responses are only sent in case of successfully pinging a remote peer
-            if (er_ok != io_channel_begin_read(control, 
+            if (er_ok != io_channel_begin_read(control,
                 num_response == 0 ? sock->control_timeout : 0, &message))
             {
                 if (num_response == 0)
@@ -685,7 +683,7 @@ static int32_t prx_client_socket_connect_unbound(
 
     if (result != er_ok)
     {
-        prx_client_socket_log_error(sock, "Failed to connect on unbound sock (%s).", 
+        prx_client_socket_log_error(sock, "Failed to connect on unbound sock (%s).",
             prx_err_string(result));
     }
 
@@ -856,7 +854,7 @@ static int32_t prx_client_socket_bind_by_name(
 )
 {
     int32_t result;
-    prx_size_t prx_ifa_count;
+    size_t prx_ifa_count;
     prx_ifaddrinfo_t* prx_ifa;
 
     // Enumerate interfaces to bind to, then bind to first successful one.
@@ -864,7 +862,7 @@ static int32_t prx_client_socket_bind_by_name(
     if (result != er_ok)
         return result;
 
-    for (prx_size_t i = 0; i < prx_ifa_count; i++)
+    for (size_t i = 0; i < prx_ifa_count; i++)
     {
         // Bind interface (= gw or host) to send or receive data
         prx_ifa[i].address.un.ip.port = port;
@@ -883,10 +881,10 @@ static int32_t prx_client_socket_bind_by_name(
 static int32_t prx_client_socket_send(
     prx_client_socket_t* sock,
     uint8_t * buf,
-    prx_size_t off,
-    prx_size_t len,
+    size_t off,
+    size_t len,
     prx_socket_address_t* address,
-    prx_size_t* sent
+    size_t* sent
 )
 {
     int32_t result;
@@ -941,7 +939,7 @@ static int32_t prx_client_socket_send(
     if (message)
         io_channel_abort_write(sock->stream, message);
 
-    *sent = result == er_ok ? (prx_size_t)len : 0;
+    *sent = result == er_ok ? len : 0;
     return result;
 }
 
@@ -951,10 +949,10 @@ static int32_t prx_client_socket_send(
 static int32_t prx_client_socket_recv(
     prx_client_socket_t* sock,
     uint8_t *buf,
-    prx_size_t off,
-    prx_size_t len,
+    size_t off,
+    size_t len,
     prx_socket_address_t* address,
-    prx_size_t* received
+    size_t* received
 )
 {
     int32_t result;
@@ -972,7 +970,7 @@ static int32_t prx_client_socket_recv(
         {
             if (sock->recv_buffer_size > sock->recv_buffer_offset)
             {
-                *received = (prx_size_t)min(len, 
+                *received = min(len,
                     sock->recv_buffer_size - sock->recv_buffer_offset);
                 memcpy(&buf[off], &sock->recv_buffer[sock->recv_buffer_offset], *received);
                 sock->recv_buffer_offset += *received;
@@ -998,7 +996,7 @@ static int32_t prx_client_socket_recv(
         if (result == er_timeout && sock->recv_count > 0)
         {
             //
-            // If we time out having received some messages, we might have lost one, 
+            // If we time out having received some messages, we might have lost one,
             // assign more recv credit and try again...
             //
             sock->recv_count = sock->recv_credit;
@@ -1028,7 +1026,7 @@ static int32_t prx_client_socket_recv(
 
             // Stream buffer
             data.buffer = sock->recv_buffer;
-            data.buffer_length = (prx_size_t)io_message_get_size(message);
+            data.buffer_length = io_message_get_size(message);
         }
         else
         {
@@ -1048,11 +1046,11 @@ static int32_t prx_client_socket_recv(
         {
             if (address)
                 memcpy(address, &data.source_address, sizeof(prx_socket_address_t));
-            *received = (prx_size_t)data.buffer_length;
+            *received = data.buffer_length;
             break;
         }
-        
-        sock->recv_buffer_size = (size_t)data.buffer_length;
+
+        sock->recv_buffer_size = data.buffer_length;
         sock->recv_buffer_offset = 0;
 
     } while (true);
@@ -1068,8 +1066,7 @@ static int32_t prx_client_socket_get_prx_host_ref(
     prx_host_t** host
 )
 {
-    if (!host)
-        return er_fault;
+    chk_arg_fault_return(host);
 
     if (!global_state.host)
         return er_bad_state;
@@ -1152,8 +1149,7 @@ int32_t prx_client_freeaddrinfo(
     prx_addrinfo_t* prx_ai
 )
 {
-    if (!prx_ai)
-        return er_fault;
+    chk_arg_fault_return(prx_ai);
 
     for (int32_t i = 0; prx_ai[i].name != NULL; i++)
         mem_free(prx_ai[i].name);
@@ -1171,7 +1167,7 @@ int32_t prx_client_getaddrinfo(
     prx_address_family_t family,
     uint32_t flags,
     prx_addrinfo_t** prx_ai,
-    prx_size_t* prx_ai_count
+    size_t* prx_ai_count
 )
 {
     int32_t result;
@@ -1181,8 +1177,8 @@ int32_t prx_client_getaddrinfo(
     prx_ns_result_t* resultset = NULL;
     prx_addrinfo_t* prx_ai_cur;
 
-    if (!prx_ai || !prx_ai_count)
-        return er_fault;
+    chk_arg_fault_return(prx_ai);
+    chk_arg_fault_return(prx_ai_count);
 
     if (family != prx_address_family_unspec &&
         family != prx_address_family_inet &&
@@ -1230,7 +1226,7 @@ int32_t prx_client_getaddrinfo(
         if (result != er_ok)
             break;
 
-        *prx_ai_count = (prx_size_t)prx_ns_result_size(resultset);
+        *prx_ai_count = prx_ns_result_size(resultset);
         if (!*prx_ai_count)
         {
             result = er_prx_host_unknown;
@@ -1239,7 +1235,7 @@ int32_t prx_client_getaddrinfo(
 
         result = er_ok;
         *prx_ai = (prx_addrinfo_t*)mem_zalloc((*prx_ai_count + 1) * sizeof(prx_addrinfo_t));
-        for (prx_size_t i = 0; i < *prx_ai_count; i++)
+        for (size_t i = 0; i < *prx_ai_count; i++)
         {
             prx_ai_cur = &(*prx_ai)[i];
             host = prx_ns_result_pop(resultset);
@@ -1262,7 +1258,7 @@ int32_t prx_client_getaddrinfo(
             prx_ns_entry_release(host);
             host = NULL;
         }
-    } 
+    }
     while (0);
 
     if (result != er_ok && *prx_ai)
@@ -1286,9 +1282,9 @@ int32_t prx_client_getaddrinfo(
 int32_t prx_client_getnameinfo(
     prx_socket_address_t* address,
     char* prx_host_name,
-    prx_size_t prx_host_length,
+    size_t prx_host_length,
     char* service,
-    prx_size_t service_length,
+    size_t service_length,
     int32_t flags
 )
 {
@@ -1301,8 +1297,7 @@ int32_t prx_client_getnameinfo(
 
     (void)flags;
 
-    if (!address)
-        return er_fault;
+    chk_arg_fault_return(address);
 
     result = prx_client_socket_get_prx_host_ref(&host);
     if (result != er_ok)
@@ -1324,7 +1319,7 @@ int32_t prx_client_getnameinfo(
             result = er_arg;
             break;
         }
-        
+
         result = string_from_int(
             address->un.ip.port, 10, buf, sizeof(buf));
         if (result != er_ok)
@@ -1332,7 +1327,7 @@ int32_t prx_client_getnameinfo(
             result = er_arg;
             break;
         }
-        
+
         if (service && !strncpy(service, buf, service_length))
         {
             result = er_arg;
@@ -1353,8 +1348,7 @@ int32_t prx_client_freeifaddrinfo(
     prx_ifaddrinfo_t* prx_ifa
 )
 {
-    if (!prx_ifa)
-        return er_fault;
+    chk_arg_fault_return(prx_ifa);
     mem_free(prx_ifa);
     return er_ok;
 }
@@ -1366,7 +1360,7 @@ int32_t prx_client_getifaddrinfo(
     const char* if_name,
     uint32_t flags,
     prx_ifaddrinfo_t** prx_ifa,
-    prx_size_t* prx_ifa_count
+    size_t* prx_ifa_count
 )
 {
     int32_t result;
@@ -1378,8 +1372,9 @@ int32_t prx_client_getifaddrinfo(
 
     (void)flags;
 
-    if (!prx_ifa || !prx_ifa_count)
-        return er_fault;
+
+    chk_arg_fault_return(prx_ifa);
+    chk_arg_fault_return(prx_ifa_count);
 
     result = prx_client_socket_get_prx_host_ref(&host);
     if (result != er_ok)
@@ -1393,7 +1388,7 @@ int32_t prx_client_getifaddrinfo(
         if (result != er_ok)
             break;
 
-        *prx_ifa_count = (prx_size_t)prx_ns_result_size(resultset);
+        *prx_ifa_count = prx_ns_result_size(resultset);
         if (!*prx_ifa_count)
         {
             result = er_prx_host_unknown;
@@ -1403,7 +1398,7 @@ int32_t prx_client_getifaddrinfo(
         result = er_ok;
         *prx_ifa = (prx_ifaddrinfo_t*)
             mem_zalloc((*prx_ifa_count + 1) * sizeof(prx_ifaddrinfo_t));
-        for (prx_size_t i = 0; i < *prx_ifa_count; i++)
+        for (size_t i = 0; i < *prx_ifa_count; i++)
         {
             prx_ifa_cur = &(*prx_ifa)[i];
             itf = prx_ns_result_pop(resultset);
@@ -1424,7 +1419,7 @@ int32_t prx_client_getifaddrinfo(
             prx_ns_entry_release(itf);
             itf = NULL;
         }
-    } 
+    }
     while (0);
 
     if (result != er_ok && *prx_ifa)
@@ -1448,7 +1443,7 @@ int32_t prx_client_getifaddrinfo(
 int32_t prx_client_getifnameinfo(
     prx_socket_address_t* if_address,
     char* if_name,
-    prx_size_t if_name_length,
+    size_t if_name_length,
     uint64_t *if_index
 )
 {
@@ -1458,8 +1453,9 @@ int32_t prx_client_getifnameinfo(
     prx_ns_entry_t* itf = NULL;
     io_ref_t address;
 
-    if (!if_address || !if_name || if_name_length <= 0)
-        return er_fault;
+    chk_arg_fault_return(if_address);
+    chk_arg_fault_return(if_name);
+    chk_arg_fault_return(if_name_length);
 
     result = prx_client_socket_get_prx_host_ref(&host);
     if (result != er_ok)
@@ -1484,7 +1480,7 @@ int32_t prx_client_getifnameinfo(
 
         if (if_index)
             *if_index = prx_ns_entry_get_index(itf);
-    } 
+    }
     while (0);
 
     if (itf)
@@ -1495,7 +1491,7 @@ int32_t prx_client_getifnameinfo(
 
 // Use pal layer directly
 decl_internal_2(int32_t, pal_pton,
-    const char*, addr_string, 
+    const char*, addr_string,
     prx_socket_address_t*, sa
 );
 
@@ -1512,9 +1508,9 @@ int32_t prx_client_pton(
 
 // Use pal layer directly
 decl_internal_3(int32_t, pal_ntop,
-    prx_socket_address_t*, sa, 
-    char*, string, 
-    prx_size_t, size
+    prx_socket_address_t*, sa,
+    char*, string,
+    size_t, size
 );
 
 //
@@ -1523,7 +1519,7 @@ decl_internal_3(int32_t, pal_ntop,
 int32_t prx_client_ntop(
     prx_socket_address_t* address,
     char* addr_string,
-    prx_size_t addr_string_size
+    size_t addr_string_size
 )
 {
     return pal_ntop(address, addr_string, addr_string_size);
@@ -1534,20 +1530,20 @@ int32_t prx_client_ntop(
 //
 int32_t prx_gethostname(
     char* name,
-    prx_size_t namelen
+    size_t namelen
 )
 {
     int32_t result;
     prx_host_t* host;
     STRING_HANDLE id;
 
-    if (!name || !namelen)
-        return er_fault;
+    chk_arg_fault_return(name);
+    chk_arg_fault_return(namelen);
 
     result = prx_client_socket_get_prx_host_ref(&host);
     if (result != er_ok)
         return (result);
-    
+
     id = io_ref_to_STRING(prx_host_get_id(host));
     prx_host_release(host);
 
@@ -1567,8 +1563,8 @@ int32_t prx_client_getpeername(
 )
 {
     prx_client_socket_t* sock;
-    if (!s || !address)
-        return er_fault;
+    chk_arg_fault_return(s);
+    chk_arg_fault_return(address);
 
     sock = prx_client_socket_get_by_id((int32_t)s, true);
     if (!sock)
@@ -1592,8 +1588,7 @@ int32_t prx_client_socket(
     prx_client_socket_t* sock;
     prx_host_t* host;
 
-    if (!created)
-        return er_fault;
+    chk_arg_fault_return(created);
 
     result = prx_client_socket_get_prx_host_ref(&host);
     if (result != er_ok)
@@ -1615,7 +1610,7 @@ int32_t prx_client_socket(
 // Wait for an activity on any of the passed in sockets
 //
 int32_t prx_client_poll(
-    prx_size_t num,
+    size_t num,
     prx_fd_t* sockets,
     uint64_t* timeout_ms
 )
@@ -1624,8 +1619,7 @@ int32_t prx_client_poll(
     ticks_t timer;
     prx_host_t* host;
 
-    if (!timeout_ms)
-        return er_fault;
+    chk_arg_fault_return(timeout_ms);
 
     // TODO: not supported yet, we will just wait for activity and let
     // caller figure it out...
@@ -1637,7 +1631,7 @@ int32_t prx_client_poll(
         return result;
 
     timer = ticks_get();
-    
+
     (void)io_cm_wait(
         prx_host_get_cm(host), *timeout_ms < 0 ? -1 : (int32_t)*timeout_ms);
 
@@ -1694,7 +1688,7 @@ int32_t prx_client_connect(
         if (sock->props.sock_type != prx_socket_type_stream)
         {
             result = er_bad_state;
-            prx_client_socket_log_error(sock, 
+            prx_client_socket_log_error(sock,
                 "Connect can only be called on stream sockets (%s)",
                 prx_err_string(result));
             break;
@@ -1753,8 +1747,7 @@ int32_t prx_client_accept(
     prx_client_socket_t* sock, *remote = NULL;
     (void)key;
 
-    if (!accepted)
-        return er_fault;
+    chk_arg_fault_return(accepted);
 
     sock = prx_client_socket_get_by_id((int32_t)s, true);
     if (!sock)
@@ -1784,13 +1777,13 @@ int32_t prx_client_accept(
         if (result != er_ok)
             break;
 
-        dbg_assert(link_request.props.sock_type == prx_socket_type_stream, 
+        dbg_assert(link_request.props.sock_type == prx_socket_type_stream,
             "Accept only streams");
 
         // Open new sock with the received properties
-        result = prx_client_socket_create(sock->host, 
-            link_request.props.family, 
-            link_request.props.sock_type, 
+        result = prx_client_socket_create(sock->host,
+            link_request.props.family,
+            link_request.props.sock_type,
             link_request.props.proto_type, &remote);
         if (result != er_ok)
             break;
@@ -1899,10 +1892,10 @@ int32_t prx_client_sendto(
     uintptr_t key,
     int32_t flags,
     uint8_t * buf,
-    prx_size_t off,
-    prx_size_t len,
+    size_t off,
+    size_t len,
     prx_socket_address_t* address,
-    prx_size_t* sent
+    size_t* sent
 )
 {
     int32_t result;
@@ -1910,8 +1903,8 @@ int32_t prx_client_sendto(
     (void)key;
     (void)flags;
 
-    if (!buf || !sent)
-        return er_fault;
+    chk_arg_fault_return(buf);
+    chk_arg_fault_return(sent);
 
     sock = prx_client_socket_get_by_id((int32_t)s, true);
     if (!sock)
@@ -1929,9 +1922,9 @@ int32_t prx_client_send(
     uintptr_t key,
     int32_t flags,
     uint8_t* buf,
-    prx_size_t off,
-    prx_size_t len,
-    prx_size_t* sent
+    size_t off,
+    size_t len,
+    size_t* sent
 )
 {
     int32_t result;
@@ -1939,8 +1932,8 @@ int32_t prx_client_send(
     (void)key;
     (void)flags;
 
-    if (!buf || !sent)
-        return er_fault;
+    chk_arg_fault_return(buf);
+    chk_arg_fault_return(sent);
 
     sock = prx_client_socket_get_by_id((int32_t)s, true);
     if (!sock)
@@ -1958,10 +1951,10 @@ int32_t prx_client_recvfrom(
     uintptr_t key,
     int32_t flags,
     uint8_t* buf,
-    prx_size_t off,
-    prx_size_t len,
+    size_t off,
+    size_t len,
     prx_socket_address_t* address,
-    prx_size_t* received
+    size_t* received
 )
 {
     int32_t result;
@@ -1969,8 +1962,8 @@ int32_t prx_client_recvfrom(
     (void)key;
     (void)flags;
 
-    if (!buf || !received)
-        return er_fault;
+    chk_arg_fault_return(buf);
+    chk_arg_fault_return(received);
 
     sock = prx_client_socket_get_by_id((int32_t)s, true);
     if (!sock)
@@ -1988,9 +1981,9 @@ int32_t prx_client_recv(
     uintptr_t key,
     int32_t flags,
     uint8_t *buf,
-    prx_size_t off,
-    prx_size_t len,
-    prx_size_t* received
+    size_t off,
+    size_t len,
+    size_t* received
 )
 {
     int32_t result;
@@ -1998,8 +1991,8 @@ int32_t prx_client_recv(
     (void)key;
     (void)flags;
 
-    if (!buf || !received)
-        return er_fault;
+    chk_arg_fault_return(buf);
+    chk_arg_fault_return(received);
 
     sock = prx_client_socket_get_by_id((int32_t)s, true);
     if (!sock)
@@ -2054,16 +2047,16 @@ int32_t prx_client_close(
         // Remote error code
         result = close_response.error_code;
 
-        prx_client_socket_log_info(sock, 
+        prx_client_socket_log_info(sock,
             "closed (was open for %lld ms, %lld bytes sent, %lld bytes received",
-            close_response.time_open, close_response.bytes_sent, 
+            close_response.time_open, close_response.bytes_sent,
             close_response.bytes_received);
-    } 
+    }
     while (0);
 
     if (result != er_ok && result != er_closed)
     {
-        prx_client_socket_log_error(sock, "Failed to close remote socket (%s)", 
+        prx_client_socket_log_error(sock, "Failed to close remote socket (%s)",
             prx_err_string(result));
     }
 
@@ -2098,7 +2091,7 @@ int32_t prx_client_listen(
     if (!sock)
         return er_closed;
 
-    if (0 == (sock->props.flags & socket_flag_passive))
+    if (0 == (sock->props.flags & prx_socket_flag_passive))
         result = er_bad_state;
     else
         sock->props.flags |= socket_flag_acceptconn;
@@ -2108,7 +2101,7 @@ int32_t prx_client_listen(
 }
 
 //
-// Returns socket options 
+// Returns socket options
 //
 int32_t prx_client_getsockopt(
     prx_fd_t s,
@@ -2123,8 +2116,7 @@ int32_t prx_client_getsockopt(
     io_getopt_request_t getopt_request;
     io_getopt_response_t getopt_response;
 
-    if (!value)
-        return er_fault;
+    chk_arg_fault_return(value);
 
     sock = prx_client_socket_get_by_id((int32_t)s, false);
     if (!sock)
@@ -2201,7 +2193,7 @@ int32_t prx_client_getsockopt(
         memset(&getopt_response, 0, sizeof(getopt_response));
         __prx_client_socket_invoke(
             getopt_request, getopt_response, sock->control_timeout, sock->log);
-        dbg_assert(getopt_response.so_val.option == option, 
+        dbg_assert(getopt_response.so_val.option == option,
             "Option type different in response");
         *value = getopt_response.so_val.value;
         break;
@@ -2244,7 +2236,7 @@ int32_t prx_client_setsockopt(
         result = er_arg;
         break;
     case prx_so_acceptconn:
-        if (0 == (sock->props.flags & socket_flag_passive))
+        if (0 == (sock->props.flags & prx_socket_flag_passive))
             result = er_arg;
         else
             sock->props.flags |= socket_flag_acceptconn;
@@ -2329,7 +2321,7 @@ int32_t prx_client_setsockopt(
 
         __prx_client_socket_invoke(
             setopt_request, void_response, sock->control_timeout, sock->log);
-    } 
+    }
     while (0);
 
     if (control)

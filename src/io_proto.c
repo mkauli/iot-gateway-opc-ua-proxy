@@ -10,8 +10,7 @@
 #include "io_proto.h"
 #undef ENABLE_GLOBAL
 #include "io_types.h"
-
-#define VERSION  ((MODULE_MAJ_VER << 6) | (MODULE_MIN_VER + 5))
+#include "pal_mt.h"
 
 //
 // Protocol factory creates protocol messages from pool memory
@@ -22,12 +21,13 @@ struct io_message_factory
     prx_buffer_factory_t* buffers;     // Dynamic buffers for payload allocs
 };
 
+atomic_t _counter;
 
 #if defined(DBG_MEM)
 #define dbg_assert_msg(m) \
     do { if (m->buffer) \
         prx_buffer_get_size(m->owner->buffers, m->buffer); \
-    prx_buffer_get_size(m->owner->messages, m); } while(0)
+    prx_buffer_get_size(m->owner->messages, (void*)m); } while(0)
 #else
 #define dbg_assert_msg(m) \
     dbg_assert_ptr(m);
@@ -37,7 +37,9 @@ struct io_message_factory
 // Create protocol message factory (actually a type safe fixed buffer pool)
 //
 int32_t io_message_factory_create(
-    size_t pool_size,
+    const char* name,
+    size_t initial_pool_size,
+    size_t max_pool_size,
     size_t low_watermark,
     size_t high_watermark,
     prx_buffer_pool_cb_t cb,
@@ -48,21 +50,21 @@ int32_t io_message_factory_create(
     int result;
     io_message_factory_t* factory;
     prx_pool_config_t config;
-    
+
     factory = mem_zalloc_type(io_message_factory_t);
     if (!factory)
         return er_out_of_memory;
     do
     {
         memset(&config, 0, sizeof(config));
-        config.initial_count = pool_size;
-        config.max_count = cb ? pool_size : 0;
+        config.increment_count = initial_pool_size;
+        config.max_count = max_pool_size;
         config.low_watermark = low_watermark;
         config.high_watermark = high_watermark;
         config.context = context;
         config.cb = cb;
 
-        result = prx_fixed_pool_create("messages",
+        result = prx_fixed_pool_create(name,
             sizeof(io_message_t), &config, &factory->messages);
         if (result != er_ok)
             break;
@@ -127,7 +129,7 @@ static int32_t io_message_allocator(
 //
 static int32_t io_encode_ping_request(
     io_codec_ctx_t* ctx,
-    io_ping_request_t* request
+    const io_ping_request_t* request
 )
 {
     int32_t result;
@@ -157,7 +159,7 @@ static int32_t io_decode_ping_request(
 //
 static int32_t io_encode_ping_response(
     io_codec_ctx_t* ctx,
-    io_ping_response_t* response
+    const io_ping_response_t* response
 )
 {
     int32_t result;
@@ -197,149 +199,11 @@ static int32_t io_decode_ping_response(
 }
 
 //
-// Encode a resolve request
-//
-static int32_t io_encode_resolve_request(
-    io_codec_ctx_t* ctx,
-    io_resolve_request_t* request
-)
-{
-    int32_t result;
-    __io_encode_type_begin(ctx, request, 4);
-    __io_encode_value(ctx, int32, request, family);
-    __io_encode_value(ctx, uint32, request, flags);
-    __io_encode_value(ctx, uint16, request, port);
-    result = io_encode_string(ctx, "host", request->host);
-    if (result != er_ok)
-        return result;
-    __io_encode_type_end(ctx);
-    return result;
-}
-
-//
-// Decode a resolve request
-//
-static int32_t io_decode_resolve_request(
-    io_codec_ctx_t* ctx,
-    io_resolve_request_t* request
-)
-{
-    int32_t result;
-    __io_decode_type_begin(ctx, request, 4);
-    __io_decode_value(ctx, int32, request, family);
-    __io_decode_value(ctx, uint32, request, flags);
-    __io_decode_value(ctx, uint16, request, port);
-    result = io_decode_string_fixed(ctx, "host",
-        request->host, sizeof(request->host));
-    if (result != er_ok)
-        return result;
-    __io_decode_type_end(ctx);
-    request->reserved = 0;
-    return result;
-}
-
-//
-// Encode a resolve response
-//
-static int32_t io_encode_resolve_response(
-    io_codec_ctx_t* ctx,
-    io_resolve_response_t* response
-)
-{
-    int32_t result;
-    io_codec_ctx_t arr;
-
-    __io_encode_type_begin(ctx, response, 1);
-
-    result = io_encode_array(ctx, "results", (size_t)response->result_count, &arr);
-    if (result != er_ok)
-        return result;
-
-    for (prx_size_t i = 0; i < response->result_count; i++)
-    {
-        io_codec_ctx_t obj;
-        result = io_encode_object(&arr, NULL, false, &obj);
-        if (result != er_ok)
-            break;
-        result = io_encode_prx_addrinfo(&obj, &response->results[i]);
-        if (result != er_ok)
-            break;
-    }
-    if (result != er_ok)
-        return result;
-
-    __io_encode_type_end(ctx);
-    return result;
-}
-
-//
-// Decode a resolve response
-//
-static int32_t io_decode_resolve_response(
-    io_codec_ctx_t* ctx,
-    io_resolve_response_t* response
-)
-{
-    int32_t result = er_ok;
-    io_codec_ctx_t arr;
-    size_t size;
-
-    __io_decode_type_begin(ctx, response, 1);
-
-    result = io_decode_array(ctx, "results", &size, &arr);
-    if (result != er_ok)
-        return result;
-
-    response->result_count = (prx_size_t)size;
-    if (!size)
-        response->results = NULL;
-    else
-    {
-        size = (size + 1) * sizeof(prx_addrinfo_t);
-        if (ctx->default_allocator) // Use default allocator if set
-            result = ctx->default_allocator(ctx, size, (void**)&response->results, &size);
-        else
-        {
-            // Otherwise allocate with malloc - correponds to prx_client_freeaddrinfo
-            response->results = (prx_addrinfo_t*)mem_zalloc(size);
-            if (!response->results)
-                result = er_out_of_memory;
-        }
-        if (result != er_ok)
-            return result;
-
-        for (prx_size_t i = 0; i < response->result_count; i++)
-        {
-            io_codec_ctx_t obj;
-            result = io_decode_object(&arr, NULL, NULL, &obj);
-            if (result != er_ok)
-                break;
-            result = io_decode_prx_addrinfo(&obj, &response->results[i]);
-            if (result != er_ok)
-                break;
-        }
-
-        if (result != er_ok)
-        {
-            // Free memory...
-            if (ctx->default_allocator)
-                ctx->default_allocator(ctx, 0, (void**)&response->results, &size);
-            else
-                mem_free(response->results);
-            response->results = NULL;
-            return result;
-        }
-    }
-    __io_decode_type_end(ctx);
-    return result;
-}
-
-//
 // Encode a link request
 //
 static int32_t io_encode_link_request(
     io_codec_ctx_t* ctx,
-    io_link_request_t* request
+    const io_link_request_t* request
 )
 {
     int32_t result;
@@ -371,14 +235,16 @@ static int32_t io_decode_link_request(
 //
 static int32_t io_encode_link_response(
     io_codec_ctx_t* ctx,
-    io_link_response_t* response
+    const io_link_response_t* response
 )
 {
     int32_t result;
-    __io_encode_type_begin(ctx, response, 3);
+    __io_encode_type_begin(ctx, response, 5);
     __io_encode_object(ctx, ref, response, link_id);
     __io_encode_object(ctx, prx_socket_address, response, local_address);
     __io_encode_object(ctx, prx_socket_address, response, peer_address);
+    __io_encode_value(ctx, uint32, response, transport_caps);
+    __io_encode_value(ctx, uint32, response, max_send);
     __io_encode_type_end(ctx);
     return result;
 }
@@ -392,10 +258,12 @@ static int32_t io_decode_link_response(
 )
 {
     int32_t result;
-    __io_decode_type_begin(ctx, response, 3);
+    __io_decode_type_begin(ctx, response, 5);
     __io_decode_object(ctx, ref, response, link_id);
     __io_decode_object(ctx, prx_socket_address, response, local_address);
     __io_decode_object(ctx, prx_socket_address, response, peer_address);
+    __io_decode_value(ctx, uint32, response, transport_caps);
+    __io_decode_value(ctx, uint32, response, max_send);
     __io_decode_type_end(ctx);
     return result;
 }
@@ -405,12 +273,12 @@ static int32_t io_decode_link_response(
 //
 static int32_t io_encode_setopt_request(
     io_codec_ctx_t* ctx,
-    io_setopt_request_t* request
+    const io_setopt_request_t* request
 )
 {
     int32_t result;
     __io_encode_type_begin(ctx, request, 1);
-    __io_encode_object(ctx, prx_socket_option_value, request, so_val);
+    __io_encode_object(ctx, prx_property, request, so_val);
     __io_encode_type_end(ctx);
     return result;
 }
@@ -425,7 +293,7 @@ static int32_t io_decode_setopt_request(
 {
     int32_t result;
     __io_decode_type_begin(ctx, request, 1);
-    __io_decode_object(ctx, prx_socket_option_value, request, so_val);
+    __io_decode_object(ctx, prx_property, request, so_val);
     __io_decode_type_end(ctx);
     return result;
 }
@@ -435,7 +303,7 @@ static int32_t io_decode_setopt_request(
 //
 static int32_t io_encode_getopt_request(
     io_codec_ctx_t* ctx,
-    io_getopt_request_t* request
+    const io_getopt_request_t* request
 )
 {
     int32_t result;
@@ -465,12 +333,12 @@ static int32_t io_decode_getopt_request(
 //
 static int32_t io_encode_getopt_response(
     io_codec_ctx_t* ctx,
-    io_getopt_response_t* response
+    const io_getopt_response_t* response
 )
 {
     int32_t result;
     __io_encode_type_begin(ctx, response, 1);
-    __io_encode_object(ctx, prx_socket_option_value, response, so_val);
+    __io_encode_object(ctx, prx_property, response, so_val);
     __io_encode_type_end(ctx);
     return result;
 }
@@ -485,7 +353,7 @@ static int32_t io_decode_getopt_response(
 {
     int32_t result;
     __io_decode_type_begin(ctx, response, 1);
-    __io_decode_object(ctx, prx_socket_option_value, response, so_val);
+    __io_decode_object(ctx, prx_property, response, so_val);
     __io_decode_type_end(ctx);
     return result;
 }
@@ -495,17 +363,20 @@ static int32_t io_decode_getopt_response(
 //
 static int32_t io_encode_open_request(
     io_codec_ctx_t* ctx,
-    io_open_request_t* request
+    const io_open_request_t* request
 )
 {
     int32_t result;
-    __io_encode_type_begin(ctx, request, 3);
+    __io_encode_type_begin(ctx, request, 6);
     __io_encode_object(ctx, ref, request, stream_id);
+    __io_encode_value(ctx, int32, request, encoding);
     result = io_encode_string(
         ctx, "connection-string", request->connection_string);
     if (result != er_ok)
         return result;
+    __io_encode_value(ctx, int32, request, type);
     __io_encode_value(ctx, bool, request, polled);
+    __io_encode_value(ctx, uint32, request, max_recv);
     __io_encode_type_end(ctx);
     return result;
 }
@@ -519,13 +390,16 @@ static int32_t io_decode_open_request(
 )
 {
     int32_t result;
-    __io_decode_type_begin(ctx, request, 3);
+    __io_decode_type_begin(ctx, request, 6);
     __io_decode_object(ctx, ref, request, stream_id);
+    __io_decode_value(ctx, int32, request, encoding);
     result = io_decode_string_default(
         ctx, "connection-string", (char**)&request->connection_string);
     if (result != er_ok)
         return result;
+    __io_decode_value(ctx, int32, request, type);
     __io_decode_value(ctx, bool, request, polled);
+    __io_decode_value(ctx, uint32, request, max_recv);
     __io_decode_type_end(ctx);
     return result;
 }
@@ -535,11 +409,12 @@ static int32_t io_decode_open_request(
 //
 static int32_t io_encode_poll_message(
     io_codec_ctx_t* ctx,
-    io_poll_message_t* message
+    const io_poll_message_t* message
 )
 {
     int32_t result;
-    __io_encode_type_begin(ctx, message, 1);
+    __io_encode_type_begin(ctx, message, 2);
+    __io_encode_value(ctx, uint64, message, sequence_number);
     __io_encode_value(ctx, uint64, message, timeout);
     __io_encode_type_end(ctx);
     return result;
@@ -554,7 +429,8 @@ static int32_t io_decode_poll_message(
 )
 {
     int32_t result;
-    __io_decode_type_begin(ctx, message, 1);
+    __io_decode_type_begin(ctx, message, 2);
+    __io_decode_value(ctx, uint64, message, sequence_number);
     __io_decode_value(ctx, uint64, message, timeout);
     __io_decode_type_end(ctx);
     return result;
@@ -565,17 +441,23 @@ static int32_t io_decode_poll_message(
 //
 static int32_t io_encode_data_message(
     io_codec_ctx_t* ctx,
-    io_data_message_t* message
+    const io_data_message_t* message
 )
 {
     int32_t result;
 
-    __io_encode_type_begin(ctx, message, 2);
+    __io_encode_type_begin(ctx, message, 5);
+    __io_encode_value(ctx, uint64, message, sequence_number);
     __io_encode_object(ctx, prx_socket_address, message, source_address);
     result = io_encode_bin(ctx, "buffer",
         message->buffer, (uint32_t)message->buffer_length);
     if (result != er_ok)
         return result;
+    result = io_encode_bin(ctx, "control_buffer",
+        message->control_buffer, (uint32_t)message->control_buffer_length);
+    if (result != er_ok)
+        return result;
+    __io_encode_value(ctx, int32, message, flags);
     __io_encode_type_end(ctx);
     return result;
 }
@@ -589,17 +471,19 @@ static int32_t io_decode_data_message(
 )
 {
     int32_t result;
-    size_t read;
-    read = (size_t)message->buffer_length;
-    if (message->buffer && read == 0)
-        return er_arg;
 
-    __io_decode_type_begin(ctx, message, 2);
+    __io_decode_type_begin(ctx, message, 5);
+    __io_decode_value(ctx, uint64, message, sequence_number);
     __io_decode_object(ctx, prx_socket_address, message, source_address);
-    result = io_decode_bin_default(ctx, "buffer", (void**)&message->buffer, &read);
+    result = io_decode_bin_default(ctx, "buffer",
+        (void**)&message->buffer, &message->buffer_length);
     if (result != er_ok)
         return result;
-    message->buffer_length = (prx_size_t)read;
+    result = io_decode_bin_default(ctx, "control_buffer",
+        (void**)&message->control_buffer, &message->control_buffer_length);
+    if (result != er_ok)
+        return result;
+    __io_decode_value(ctx, int32, message, flags);
     __io_decode_type_end(ctx);
     return result;
 }
@@ -609,7 +493,7 @@ static int32_t io_decode_data_message(
 //
 static int32_t io_encode_close_response(
     io_codec_ctx_t* ctx,
-    io_close_response_t* response
+    const io_close_response_t* response
 )
 {
     int32_t result;
@@ -645,7 +529,7 @@ static int32_t io_decode_close_response(
 //
 static int32_t io_encode_message_content(
     io_codec_ctx_t* ctx,
-    io_message_t* msg
+    const io_message_t* msg
 )
 {
     int32_t result;
@@ -666,7 +550,7 @@ static int32_t io_encode_message_content(
     if (result != er_ok) \
         return result; \
     } while(0)
-    
+
     dbg_assert_msg(msg);
     if (msg->is_response)
     {
@@ -686,15 +570,13 @@ static int32_t io_encode_message_content(
             __io_encode_null(ctx);
         else if (msg->type == io_message_type_getopt)
             __io_encode_content(ctx, getopt_response, msg);
-        else if (msg->type == io_message_type_resolve)
-            __io_encode_content(ctx, resolve_response, msg);
-        else 
+        else
             result = er_not_supported;
     }
     else  // encode request
     {
         /**/ if (msg->type == io_message_type_data)
-            __io_encode_content(ctx, data_message, msg); 
+            __io_encode_content(ctx, data_message, msg);
         else if (msg->type == io_message_type_close)
             __io_encode_null(ctx);
         else if (msg->type == io_message_type_ping)
@@ -709,8 +591,6 @@ static int32_t io_encode_message_content(
             __io_encode_content(ctx, setopt_request, msg);
         else if (msg->type == io_message_type_getopt)
             __io_encode_content(ctx, getopt_request, msg);
-        else if (msg->type == io_message_type_resolve)
-            __io_encode_content(ctx, resolve_request, msg);
         else
             result = er_not_supported;
     }
@@ -758,7 +638,7 @@ static int32_t io_decode_message_content(
     if (msg->is_response)
     {
         /**/ if (msg->type == io_message_type_data)
-            __io_decode_content(ctx, data_message, msg); 
+            __io_decode_content(ctx, data_message, msg);
         else if (msg->type == io_message_type_close)
             __io_decode_content(ctx, close_response, msg);
         else if (msg->type == io_message_type_ping)
@@ -773,15 +653,13 @@ static int32_t io_decode_message_content(
             __io_decode_null(ctx);
         else if (msg->type == io_message_type_getopt)
             __io_decode_content(ctx, getopt_response, msg);
-        else if (msg->type == io_message_type_resolve)
-            __io_decode_content(ctx, resolve_response, msg);
         else
             result = er_not_supported;
     }
     else  // decode request
     {
         /**/ if (msg->type == io_message_type_data)
-            __io_decode_content(ctx, data_message, msg); 
+            __io_decode_content(ctx, data_message, msg);
         else if (msg->type == io_message_type_close)
             __io_decode_null(ctx);
         else if (msg->type == io_message_type_ping)
@@ -796,8 +674,6 @@ static int32_t io_decode_message_content(
             __io_decode_content(ctx, setopt_request, msg);
         else if (msg->type == io_message_type_getopt)
             __io_decode_content(ctx, getopt_request, msg);
-        else if (msg->type == io_message_type_resolve)
-            __io_decode_content(ctx, resolve_request, msg);
         else
             result = er_not_supported;
     }
@@ -815,8 +691,6 @@ const char* io_message_type_as_string(
 {
     /**/ if (type == io_message_type_ping)
         return "PING";
-    else if (type == io_message_type_resolve)
-        return "RESOLVE";
     else if (type == io_message_type_link)
         return "LINK";
     else if (type == io_message_type_setopt)
@@ -848,8 +722,8 @@ int32_t io_message_create_empty(
 {
     io_message_t* message;
 
-    if (!pool || !created)
-        return er_fault;
+    chk_arg_fault_return(pool);
+    chk_arg_fault_return(created);
 
     message = (io_message_t*)prx_buffer_alloc(pool->messages, NULL);
     if (!message)
@@ -875,11 +749,16 @@ int32_t io_message_create(
     int32_t result;
     io_message_t* message;
 
+    chk_arg_fault_return(source);
+    chk_arg_fault_return(target);
+    chk_arg_fault_return(created);
+
     result = io_message_create_empty(pool, &message);
     if (result != er_ok)
         return result;
 
     message->type = type;
+    message->seq_id = (uint32_t)atomic_inc(_counter);
     io_ref_copy(source, &message->source_id);
     io_ref_copy(target, &message->target_id);
     dbg_assert_msg(message);
@@ -896,8 +775,8 @@ int32_t io_message_clone(
 )
 {
     io_message_t* message;
-    if (!original || !created)
-        return er_fault;
+    chk_arg_fault_return(original);
+    chk_arg_fault_return(created);
 
     dbg_assert_msg(original);
     message = (io_message_t*)prx_buffer_alloc(
@@ -934,8 +813,8 @@ int32_t io_message_allocate_buffer(
     int32_t result;
     size_t current_size;
 
-    if (!message || !mem)
-        return er_fault;
+    chk_arg_fault_return(message);
+    chk_arg_fault_return(mem);
     dbg_assert_msg(message);
     if (!size) // No need to free, buffer is freed when message released.
     {
@@ -974,6 +853,8 @@ void io_message_release(
         return;
     dbg_assert_ptr(message->owner);
     dbg_assert_msg(message);
+    if (!message->owner)
+        return; // Safe
 
     if (message->buffer)
         prx_buffer_release(message->owner->buffers, message->buffer);
@@ -986,7 +867,7 @@ void io_message_release(
 //
 int32_t io_encode_message(
     io_codec_ctx_t* ctx,
-    io_message_t* msg
+    const io_message_t* msg
 )
 {
     int32_t result;
@@ -994,8 +875,8 @@ int32_t io_encode_message(
     dbg_assert_ptr(ctx);
     dbg_assert_msg(msg);
 
-    __io_encode_type_begin(ctx, msg, 8);
-    result = io_encode_uint8(ctx, "version", VERSION);
+    __io_encode_type_begin(ctx, msg, 9);
+    result = io_encode_uint32(ctx, "version", MODULE_VER_NUM);
     if (result != er_ok)
         return result;
 
@@ -1003,6 +884,7 @@ int32_t io_encode_message(
     __io_encode_object(ctx, ref, msg, proxy_id);
     __io_encode_object(ctx, ref, msg, target_id);
 
+    __io_encode_value(ctx, uint32, msg, seq_id);
     __io_encode_value(ctx, int32, msg, error_code);
     __io_encode_value(ctx, bool, msg, is_response);
     __io_encode_value(ctx, uint32, msg, type);
@@ -1025,18 +907,19 @@ int32_t io_decode_message(
 )
 {
     int32_t result;
-    uint8_t version;
+    uint32_t version;
 
     dbg_assert_ptr(ctx);
     dbg_assert_msg(msg);
 
-    __io_decode_type_begin(ctx, msg, 8);
-    result = io_decode_uint8(ctx, "version", &version);
+    __io_decode_type_begin(ctx, msg, 9);
+    result = io_decode_uint32(ctx, "version", &version);
     if (result != er_ok)
         return result;
-    if (version != VERSION)
+
+    if ((version >> 24) != MODULE_MAJ_VER) // Major version declares compatibility
     {
-        log_error(NULL, "Received message with unknown version %d.", version);
+        log_error(NULL, "Received message with incompatible version %x.", version);
         return er_invalid_format;
     }
 
@@ -1044,6 +927,7 @@ int32_t io_decode_message(
     __io_decode_object(ctx, ref, msg, proxy_id);
     __io_decode_object(ctx, ref, msg, target_id);
 
+    __io_decode_value(ctx, uint32, msg, seq_id);
     __io_decode_value(ctx, int32, msg, error_code);
     __io_decode_value(ctx, bool, msg, is_response);
     __io_decode_value(ctx, uint32, msg, type);
@@ -1059,7 +943,7 @@ int32_t io_decode_message(
 }
 
 //
-// Converts message to response 
+// Converts message to response
 //
 void io_message_as_response(
     io_message_t* message

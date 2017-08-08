@@ -9,18 +9,21 @@
 //
 
 #include <sys/ioctl.h>
-#include <sys/types.h>          
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
-#include <netinet/in.h>  
-#include <netinet/tcp.h> 
-#include <arpa/inet.h> 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
 #include <poll.h>
 #include <net/if.h>
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <errno.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <signal.h>
 #include <err.h>
 
@@ -42,13 +45,21 @@ typedef long long ticks_t;
 #define EAI_FAIL -1
 #endif
 
-#include <fcntl.h>
-#define _fd_nonblock(fd, r) \
-    r = fcntl(fd, F_GETFL, 0); \
-    if (r != -1) { \
-        r |= O_NONBLOCK; \
-        r = fcntl(fd, F_SETFL, r); \
-    }
+#if !defined(EAI_ADDRFAMILY)
+#define EAI_ADDRFAMILY EAI_NODATA
+#endif
 
+#include <fcntl.h>
+
+static inline int _fd_nonblock(fd_t fd)
+{
+    int r = fcntl(fd, F_GETFL, 0);
+    if (r != -1) {
+        r |= O_NONBLOCK;
+        r = fcntl(fd, F_SETFL, r);
+    }
+}
+
+#define closesocket close
 
 #endif // _os_posix_h_

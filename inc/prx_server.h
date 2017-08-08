@@ -9,7 +9,7 @@
 #include "io_transport.h"
 
 //
-// Handles remote socket creation and name resolution
+// Handles link protocol, i.e. remote sockets
 //
 typedef struct prx_server prx_server_t;
 
@@ -24,7 +24,7 @@ decl_public_4(int32_t, prx_server_create,
 );
 
 //
-// Free socket server 
+// Free socket server
 //
 decl_public_1(void, prx_server_release,
     prx_server_t*, server

@@ -7,7 +7,7 @@
 #include "pal_types.h"
 #include "pal_err.h"
 #include "util_string.h"
-
+#include "util_misc.h"
 
 //
 // Returns a networking stack error as pal error
@@ -66,7 +66,7 @@ int32_t pal_os_to_prx_ifaddrinfo(
     //
     // Note that we use sizeof(struct sockaddr_in6), assuming here the family
     // in the socket buffer denotes the real struct size and os is returning
-    // an address with the right length.  
+    // an address with the right length.
     //
     result = pal_os_to_prx_socket_address(
         ifaddr, sizeof(struct sockaddr_in6), &prx_ifa->address);
@@ -134,11 +134,11 @@ int32_t pal_getifaddrinfo(
     const char* if_name,
     uint32_t flags,
     prx_ifaddrinfo_t** prx_ifa,
-    prx_size_t* prx_ifa_count
+    size_t* prx_ifa_count
 )
 {
     int32_t result;
-    prx_size_t alloc_count = 0;
+    size_t alloc_count = 0;
     struct ifaddrs *ifaddr = NULL, *ifa;
 
     (void)flags;
@@ -206,7 +206,7 @@ int32_t pal_getifaddrinfo(
                 result = pal_os_to_prx_ifaddrinfo(ifa, ifa->ifa_addr, prx_ifa_cur);
                 if (result != er_ok)
                     continue;
-                
+
                 prx_ifa_cur->index = if_nametoindex(ifa->ifa_name);
                 if (prx_ifa_cur->index != 0)  // Returns index 0 on error
                     (*prx_ifa_count)++;
@@ -260,7 +260,7 @@ int32_t pal_freeifaddrinfo(
 int32_t pal_getifnameinfo(
     prx_socket_address_t* if_address,
     char* if_name,
-    prx_size_t if_name_length,
+    size_t if_name_length,
     uint64_t *if_index
 )
 {
@@ -276,7 +276,7 @@ int32_t pal_getifnameinfo(
 //
 int32_t pal_gethostname(
     char* name,
-    prx_size_t namelen
+    size_t namelen
 )
 {
     int32_t result;
@@ -292,137 +292,21 @@ int32_t pal_gethostname(
 }
 
 //
-// Leave multicast group
+// Called before using networking layer
 //
-int32_t pal_leave_multicast_group(
-    prx_fd_t fd, 
-    prx_multicast_option_t* option
+int32_t pal_net_init(
+    void
 )
 {
-    int32_t result;
-    struct ipv6_mreq opt6;
-    struct ip_mreqn opt;
-
-    if (!option)
-        return er_fault;
-
-    switch (option->family)
-    {
-    case prx_address_family_inet:
-        opt.imr_multiaddr.s_addr = option->address.in4.un.addr;
-
-        opt.imr_address.s_addr = INADDR_ANY;
-        opt.imr_ifindex = option->interface_index;
-
-        result = setsockopt(
-            (fd_t)fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, (char*)&opt, sizeof(opt));
-        break;
-    case prx_address_family_inet6:
-        memcpy(opt6.ipv6mr_multiaddr.s6_addr, option->address.in6.un.u8,
-            sizeof(option->address.in6.un.u8));
-        opt6.ipv6mr_interface = option->interface_index;
-        result = setsockopt(
-            (fd_t)fd, IPPROTO_IPV6, IPV6_DROP_MEMBERSHIP, (char*)&opt6, sizeof(opt6));
-        break;
-    default:
-        return er_not_supported;
-    }
-    return result == 0 ? er_ok : pal_os_last_net_error_as_prx_error();
-}
-
-//
-// Join multicast group
-//
-int32_t pal_join_multicast_group(
-    prx_fd_t fd, 
-    prx_multicast_option_t* option
-)
-{
-    int32_t result;
-    struct ipv6_mreq opt6;
-    struct ip_mreqn opt;
-
-    if (!option)
-        return er_fault;
-
-    switch (option->family)
-    {
-    case prx_address_family_inet:
-        opt.imr_multiaddr.s_addr = option->address.in4.un.addr;
-
-        opt.imr_address.s_addr = INADDR_ANY;
-        opt.imr_ifindex = option->interface_index;
-
-        result = setsockopt(
-            (fd_t)fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&opt, sizeof(opt));
-        break;
-    case prx_address_family_inet6:
-        memcpy(opt6.ipv6mr_multiaddr.s6_addr, option->address.in6.un.u8, 
-            sizeof(option->address.in6.un.u8));
-        opt6.ipv6mr_interface = option->interface_index;
-#if !defined(IPV6_ADD_MEMBERSHIP) && defined(IPV6_JOIN_GROUP)
-#define IPV6_ADD_MEMBERSHIP IPV6_JOIN_GROUP
-#endif
-        result = setsockopt(
-            (fd_t)fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, (char*)&opt6, sizeof(opt6));
-        break;
-    default:
-        return er_not_supported;
-    }
-    return result == 0 ? er_ok : pal_os_last_net_error_as_prx_error();
-}
-
-//
-// Close socket
-//
-int32_t pal_close(
-    prx_fd_t fd
-)
-{
-    int32_t result;
-    result = close((fd_t)fd);
-    return result == 0 ? er_ok : pal_os_last_net_error_as_prx_error();
-}
-
-//
-// Sets a socket fd to be nonblocking -- used by common pal only
-//
-int32_t pal_set_nonblocking(
-    prx_fd_t fd,
-    bool enabled
-)
-{
-    int32_t result;
-    result = fcntl((fd_t)fd, F_GETFL, 0);
-    if (result != -1)
-    {
-        if (!enabled)
-            result &= ~O_NONBLOCK;
-        else
-            result |= O_NONBLOCK;
-        result = fcntl((fd_t)fd, F_SETFL, result);
-    }
-    if (result == -1)
-        return pal_os_last_net_error_as_prx_error();
     return er_ok;
 }
 
 //
-// Returns number of bytes available to read -- used by common pal only
+// Free networking layer
 //
-int32_t pal_get_available(
-    prx_fd_t fd,
-    prx_size_t* available
+void pal_net_deinit(
+    void
 )
 {
-    int32_t result;
-    int val;
-    if (!available)
-        return er_fault;
-    result = ioctl((fd_t)fd, FIONREAD, &val);
-    if (result == -1)
-        return pal_os_last_net_error_as_prx_error();
-    *available = (prx_size_t)val;
-    return er_ok;
+    // No op
 }
-

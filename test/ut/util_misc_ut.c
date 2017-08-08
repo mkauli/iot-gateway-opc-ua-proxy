@@ -13,6 +13,7 @@
 //
 #undef ENABLE_MOCKS
 #include UNIT_H
+#include "azure_c_shared_utility/tickcounter.h"
 #define ENABLE_MOCKS
 #include UNIT_C
 
@@ -29,9 +30,9 @@ END_DECLARE_TEST_SUITE()
 BEGIN_DECLARE_TEST_SETUP()
 END_DECLARE_TEST_SETUP()
 
-// 
-// Test count_leading_ones happy path 
-// 
+//
+// Test count_leading_ones happy path
+//
 TEST_FUNCTION(count_leading_ones__success)
 {
     const uint8_t k_b_valid0 = 0;
@@ -39,9 +40,9 @@ TEST_FUNCTION(count_leading_ones__success)
     const uint8_t k_b_valid255 = 0xff;
     size_t result;
 
-    // arrange 
+    // arrange
 
-    // act / assert 
+    // act / assert
     result = count_leading_ones(k_b_valid0);
     ASSERT_ARE_EQUAL(size_t, 0, result);
     result = count_leading_ones(k_b_valid23);
@@ -49,13 +50,13 @@ TEST_FUNCTION(count_leading_ones__success)
     result = count_leading_ones(k_b_valid255);
     ASSERT_ARE_EQUAL(size_t, 8, result);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test count_leading_ones_in_buf happy path 
-// 
+//
+// Test count_leading_ones_in_buf happy path
+//
 TEST_FUNCTION(count_leading_ones_in_buf__success)
 {
     const uint8_t k_b_valid0[] = { 0, 0, 0 };
@@ -65,9 +66,9 @@ TEST_FUNCTION(count_leading_ones_in_buf__success)
     const uint8_t k_b_valid255[] = { 255 };
     size_t result;
 
-    // arrange 
+    // arrange
 
-    // act / assert 
+    // act / assert
     result = count_leading_ones_in_buf(NULL, 0);
     ASSERT_ARE_EQUAL(size_t, 0, result);
     result = count_leading_ones_in_buf(k_b_valid0, sizeof(k_b_valid0));
@@ -81,22 +82,22 @@ TEST_FUNCTION(count_leading_ones_in_buf__success)
     result = count_leading_ones_in_buf(k_b_valid255, sizeof(k_b_valid255));
     ASSERT_ARE_EQUAL(size_t, 8, result);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test crc32 happy path 
-// 
+//
+// Test crc32 happy path
+//
 TEST_FUNCTION(crc32__success)
 {
     static const size_t k_len_valid = 256;
     const void* k_buf_valid = (void*)UT_MEM;
     uint32_t result;
 
-    // arrange 
+    // arrange
 
-    // act 
+    // act
     memset(UT_MEM, 23, k_len_valid);
     result = crc32(k_buf_valid, k_len_valid);
     ASSERT_ARE_EQUAL(uint32_t, 2909714534, result);
@@ -113,23 +114,23 @@ TEST_FUNCTION(crc32__success)
     result = crc32(k_buf_valid, k_len_valid);
     ASSERT_ARE_EQUAL(uint32_t, 4272465953, result);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test crc32 passing as buf argument an invalid const void* value 
-// 
+//
+// Test crc32 passing as buf argument an invalid const void* value
+//
 TEST_FUNCTION(crc32__arg_buf_invalid)
 {
     uint32_t result;
 
-    // arrange 
+    // arrange
 
-    // act 
+    // act
     result = crc32(NULL, 0);
 
-    // assert 
+    // assert
     ASSERT_ARE_EQUAL(uint32_t, 0, result);
     ASSERT_EXPECTED_CALLS();
 }

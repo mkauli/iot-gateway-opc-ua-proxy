@@ -13,7 +13,7 @@
 MOCKABLE_FUNCTION(WINAPI, DWORD, WaitForSingleObject,
     HANDLE, hHandle, DWORD, dwMilliseconds);
 // processthreadsapi.h
-MOCKABLE_FUNCTION(WINAPI, BOOL, CreateProcess,
+MOCKABLE_FUNCTION(WINAPI, BOOL, CreateProcessA,
     LPCSTR, lpApplicationName, LPSTR, lpCommandLine, LPSECURITY_ATTRIBUTES, lpProcessAttributes,
     LPSECURITY_ATTRIBUTES, lpThreadAttributes, BOOL, bInheritHandles, DWORD, dwCreationFlags,
     LPVOID, lpEnvironment, LPCSTR, lpCurrentDirectory, LPSTARTUPINFO, lpStartupInfo,
@@ -56,9 +56,9 @@ END_DECLARE_TEST_SUITE()
 DECLARE_TEST_SETUP()
 
 
-// 
-// Test pal_process_spawn happy path 
-// 
+//
+// Test pal_process_spawn happy path
+//
 TEST_FUNCTION(pal_win_process_spawn__success)
 {
     static const char* k_image_valid = "test";
@@ -71,7 +71,7 @@ TEST_FUNCTION(pal_win_process_spawn__success)
 
     memset(UT_MEM, 0, sizeof(UT_MEM));
 
-    // arrange 
+    // arrange
     STRICT_EXPECTED_CALL(h_realloc(sizeof(process_t), NULL, true, IGNORED_PTR_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG))
         .IgnoreArgument(4).IgnoreArgument(5).IgnoreArgument(6)
         .SetReturn((void*)UT_MEM);
@@ -92,22 +92,22 @@ TEST_FUNCTION(pal_win_process_spawn__success)
     }
     STRICT_EXPECTED_CALL(STRING_c_str(k_image_string_handle))
         .SetReturn(cmd_line);
-    STRICT_EXPECTED_CALL(CreateProcess(NULL, cmd_line, NULL, NULL, FALSE, CREATE_NEW_CONSOLE | NORMAL_PRIORITY_CLASS,
+    STRICT_EXPECTED_CALL(CreateProcessA(NULL, cmd_line, NULL, NULL, FALSE, CREATE_NEW_CONSOLE | NORMAL_PRIORITY_CLASS,
         NULL, NULL, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument(9).IgnoreArgument(10)
         .SetReturn(TRUE);
 
-    // act 
+    // act
     result = pal_process_spawn(k_image_valid, k_argc_valid, k_argv_valid, &created_valid);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
     ASSERT_ARE_EQUAL(int32_t, er_ok, result);
 }
 
-// 
-// Test pal_process_spawn passing as created argument an invalid process_t** value 
-// 
+//
+// Test pal_process_spawn passing as created argument an invalid process_t** value
+//
 TEST_FUNCTION(pal_win_process_spawn__arg_created_null)
 {
     static const char* k_image_valid = "test";
@@ -115,20 +115,20 @@ TEST_FUNCTION(pal_win_process_spawn__arg_created_null)
     static const char* k_argv_valid[] = { "a", "b", "c" };
     int32_t result;
 
-    // arrange 
+    // arrange
 
-    // act 
+    // act
     result = pal_process_spawn(k_image_valid, k_argc_valid, k_argv_valid, NULL);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
     ASSERT_ARE_EQUAL(int32_t, er_fault, result);
 }
 
-// 
-// Test pal_process_spawn unhappy path 
-// 
-TEST_FUNCTION(pal_win_process_spawn__neg)
+//
+// Test pal_process_spawn unhappy path
+//
+TEST_FUNCTION(pal_win_process_spawn__neg_1)
 {
     static const char* k_image_valid = "test";
     static const int32_t k_argc_valid = 5;
@@ -138,7 +138,61 @@ TEST_FUNCTION(pal_win_process_spawn__neg)
     process_t* created_valid;
     int32_t result;
 
-    // arrange 
+    memset(UT_MEM, 0, sizeof(UT_MEM));
+
+    // arrange
+    STRICT_EXPECTED_CALL(h_realloc(sizeof(process_t), NULL, true, IGNORED_PTR_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG))
+        .IgnoreArgument(4).IgnoreArgument(5).IgnoreArgument(6)
+        .SetReturn((void*)UT_MEM);
+    STRICT_EXPECTED_CALL(STRING_new())
+        .SetReturn(k_image_string_handle);
+    STRICT_EXPECTED_CALL(STRING_concat(k_image_string_handle, "\""))
+        .SetReturn(0);
+    STRICT_EXPECTED_CALL(STRING_concat(k_image_string_handle, k_image_valid))
+        .SetReturn(0);
+    STRICT_EXPECTED_CALL(STRING_concat(k_image_string_handle, "\""))
+        .SetReturn(0);
+    for (int32_t i = 0; i < k_argc_valid; i++)
+    {
+        STRICT_EXPECTED_CALL(STRING_concat(k_image_string_handle, " "))
+            .SetReturn(0);
+        STRICT_EXPECTED_CALL(STRING_concat(k_image_string_handle, k_argv_valid[i]))
+            .SetReturn(0);
+    }
+    STRICT_EXPECTED_CALL(STRING_c_str(k_image_string_handle))
+        .SetReturn(cmd_line);
+    STRICT_EXPECTED_CALL(CreateProcessA(NULL, cmd_line, NULL, NULL, FALSE, CREATE_NEW_CONSOLE | NORMAL_PRIORITY_CLASS,
+        NULL, NULL, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
+        .IgnoreArgument(9).IgnoreArgument(10)
+        .SetReturn(FALSE);
+    STRICT_EXPECTED_CALL(pal_os_last_error_as_prx_error())
+        .SetReturn(er_fatal);
+    STRICT_EXPECTED_CALL(STRING_delete(k_image_string_handle));
+    STRICT_EXPECTED_CALL(h_free((void*)UT_MEM, IGNORED_PTR_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG))
+        .IgnoreArgument(2).IgnoreArgument(3).IgnoreArgument(4);
+
+    // act
+    result = pal_process_spawn(k_image_valid, k_argc_valid, k_argv_valid, &created_valid);
+
+    // assert
+    ASSERT_EXPECTED_CALLS();
+    ASSERT_ARE_EQUAL(int32_t, er_fatal, result);
+}
+
+//
+// Test pal_process_spawn unhappy path
+//
+TEST_FUNCTION(pal_win_process_spawn__neg_2)
+{
+    static const char* k_image_valid = "test";
+    static const int32_t k_argc_valid = 5;
+    static const char* k_argv_valid[] = { "a", "b", "c", "d", "e" };
+    static const STRING_HANDLE k_image_string_handle = (STRING_HANDLE)0x232423;
+    static char* cmd_line = "foobar";
+    process_t* created_valid;
+    int32_t result;
+
+    // arrange
     UMOCK_C_NEGATIVE_TESTS_ARRANGE();
     STRICT_EXPECTED_CALL(h_realloc(sizeof(process_t), NULL, true, IGNORED_PTR_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG))
         .IgnoreArgument(4).IgnoreArgument(5).IgnoreArgument(6)
@@ -168,13 +222,13 @@ TEST_FUNCTION(pal_win_process_spawn__neg)
     STRICT_EXPECTED_CALL(STRING_c_str(k_image_string_handle))
         .SetReturn(cmd_line)
         .SetFailReturn(cmd_line);
-    STRICT_EXPECTED_CALL(CreateProcess(NULL, cmd_line, NULL, NULL, FALSE, CREATE_NEW_CONSOLE | NORMAL_PRIORITY_CLASS,
+    STRICT_EXPECTED_CALL(CreateProcessA(NULL, cmd_line, NULL, NULL, FALSE, CREATE_NEW_CONSOLE | NORMAL_PRIORITY_CLASS,
         NULL, NULL, IGNORED_PTR_ARG, IGNORED_PTR_ARG))
         .IgnoreArgument(9).IgnoreArgument(10)
         .SetReturn(TRUE)
         .SetFailReturn(FALSE);
 
-    // act 
+    // act
     UMOCK_C_NEGATIVE_TESTS_ACT();
     memset(UT_MEM, 0, sizeof(UT_MEM));
     result = pal_process_spawn(k_image_valid, k_argc_valid, k_argv_valid, &created_valid);
@@ -184,46 +238,46 @@ TEST_FUNCTION(pal_win_process_spawn__neg)
         er_out_of_memory, er_out_of_memory, er_out_of_memory, er_out_of_memory, er_out_of_memory,
         er_out_of_memory, er_out_of_memory, er_out_of_memory, er_out_of_memory, er_out_of_memory,
         er_out_of_memory, er_out_of_memory, er_out_of_memory, er_out_of_memory, er_out_of_memory,
-        er_ok,            er_out_of_memory, er_ok);
+        er_ok);
 }
 
-// 
-// Test pal_process_kill happy path 
-// 
+//
+// Test pal_process_kill happy path
+//
 TEST_FUNCTION(pal_win_process_kill__success)
 {
     static const HANDLE k_process_handle_valid = (HANDLE)0x2342;
     process_t process_valid;
     process_valid.pi.hProcess = k_process_handle_valid;
 
-    // arrange 
+    // arrange
     STRICT_EXPECTED_CALL(TerminateProcess(k_process_handle_valid, 0))
         .SetReturn(TRUE);
 
-    // act 
+    // act
     pal_process_kill(&process_valid);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test pal_process_kill passing as process argument an invalid process_t* value 
-// 
+//
+// Test pal_process_kill passing as process argument an invalid process_t* value
+//
 TEST_FUNCTION(pal_win_process_kill__arg_pal_process_null)
 {
-    // arrange 
+    // arrange
 
-    // act 
+    // act
     pal_process_kill(NULL);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test pal_process_yield happy path 
-// 
+//
+// Test pal_process_yield happy path
+//
 TEST_FUNCTION(pal_win_process_yield__success_1)
 {
     static const HANDLE k_process_handle_valid = (HANDLE)0x2342;
@@ -235,7 +289,7 @@ TEST_FUNCTION(pal_win_process_yield__success_1)
     process_valid.pi.hThread = k_thread_handle_valid;
     process_valid.cmd_line = k_cmd_line_handle_valid;
 
-    // arrange 
+    // arrange
     STRICT_EXPECTED_CALL(WaitForSingleObject(k_process_handle_valid, INFINITE))
         .SetReturn(WAIT_OBJECT_0);
     STRICT_EXPECTED_CALL(CloseHandle(k_process_handle_valid))
@@ -246,16 +300,16 @@ TEST_FUNCTION(pal_win_process_yield__success_1)
     STRICT_EXPECTED_CALL(h_free((void*)&process_valid, IGNORED_PTR_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG))
         .IgnoreArgument(2).IgnoreArgument(3).IgnoreArgument(4);
 
-    // act 
+    // act
     pal_process_yield(&process_valid);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test pal_process_yield happy path 
-// 
+//
+// Test pal_process_yield happy path
+//
 TEST_FUNCTION(pal_win_process_yield__success_2)
 {
     static const HANDLE k_process_handle_valid = (HANDLE)0x2342;
@@ -266,7 +320,7 @@ TEST_FUNCTION(pal_win_process_yield__success_2)
     memset(&process_valid, 0, sizeof(process_t));
     process_valid.pi.hProcess = k_process_handle_valid;
 
-    // arrange 
+    // arrange
     STRICT_EXPECTED_CALL(WaitForSingleObject(k_process_handle_valid, INFINITE))
         .SetReturn(WAIT_OBJECT_0);
     STRICT_EXPECTED_CALL(CloseHandle(k_process_handle_valid))
@@ -274,24 +328,24 @@ TEST_FUNCTION(pal_win_process_yield__success_2)
     STRICT_EXPECTED_CALL(h_free((void*)&process_valid, IGNORED_PTR_ARG, IGNORED_NUM_ARG, IGNORED_NUM_ARG))
         .IgnoreArgument(2).IgnoreArgument(3).IgnoreArgument(4);
 
-    // act 
+    // act
     pal_process_yield(&process_valid);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 
-// 
-// Test pal_process_yield passing as proc argument an invalid process_t* value 
-// 
+//
+// Test pal_process_yield passing as proc argument an invalid process_t* value
+//
 TEST_FUNCTION(pal_win_process_yield__arg_proc_invalid)
 {
-    // arrange 
+    // arrange
 
-    // act 
+    // act
     pal_process_yield(NULL);
 
-    // assert 
+    // assert
     ASSERT_EXPECTED_CALLS();
 }
 

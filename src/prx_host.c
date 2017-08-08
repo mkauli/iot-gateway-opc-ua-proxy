@@ -3,6 +3,7 @@
 
 #include "util_mem.h"
 #include "prx_host.h"
+#include "prx_log.h"
 #include "prx_module.h"
 #include "prx_sched.h"
 #include "prx_server.h"
@@ -14,6 +15,7 @@
 #include "pal_file.h"
 #include "pal_net.h"  // for pal_gethostname
 
+#include "util_misc.h"
 #include "util_signal.h"
 #include "util_string.h"
 
@@ -23,9 +25,6 @@
 
 #include <stdio.h>
 #include "getopt.h"
-
-const char* k_ns_local_json_file = "ns.local.json";
-const char* k_ns_hub_json_file = "ns.hub.json";
 
 //
 // Server running in or outside host process
@@ -53,7 +52,7 @@ struct prx_host
     DLIST_ENTRY modules;                  // List of modules managed by host
     bool running;
     signal_t* exit_signal;                // Allows waiting for host to exit
-    prx_module_api_t* module;      // entry points to manage gateway modules
+    prx_module_api_t* module;         // entry points to manage edge modules
     log_t log;
 };
 
@@ -69,7 +68,8 @@ static prx_host_t* process_host = NULL;
 //
 static int32_t prx_host_install_server(
     prx_host_t* host,
-    const char* name
+    const char* name,
+    const char* domain
 )
 {
     int32_t result;
@@ -85,8 +85,8 @@ static int32_t prx_host_install_server(
         result = prx_ns_get_entry_by_name(host->remote, name, &resultset);
         if (result == er_not_found)
         {
-            result = prx_ns_entry_create(
-                prx_ns_entry_type_proxy, name, name, &entry);
+            result = prx_ns_entry_create(prx_ns_entry_type_proxy,
+                name, name, domain, MODULE_VER_NUM, &entry);
             if (result != er_ok)
                 break;
             result = prx_ns_create_entry(host->remote, entry);
@@ -140,8 +140,8 @@ static int32_t prx_host_uninstall_server(
     for (int local = 0; local < 2; local++)
     {
         //
-        // First round remove from remote and local, next remove remaining 
-        // matching entries from local database.  If remote removal fails, 
+        // First round remove from remote and local, next remove remaining
+        // matching entries from local database.  If remote removal fails,
         // re-add to local, and exit.
         //
         if (name)
@@ -178,7 +178,7 @@ static int32_t prx_host_uninstall_server(
         }
         if (result != er_ok)
             break;
-    } 
+    }
 
     if (result == er_not_found)
         result = er_ok;
@@ -200,47 +200,50 @@ static int32_t prx_host_init_from_command_line(
 {
     int32_t result;
 
-    int c;
+    int c, tmp;
     int option_index = 0;
 
     io_cs_t *cs = NULL;
+    prx_ns_entry_t* entry = NULL;
     const char *server_name = NULL;
+    const char *domain = NULL;
     const char *log_config = NULL;
     const char *log_file = NULL;
     const char *ns_registry = NULL;
+    const char *c_string = NULL;
 
     char buffer[128];
     bool is_install = false;
     bool is_uninstall = false;
     bool should_exit = false;
-    bool is_test = false;
-    int loops = 1;
-    io_ref_t test;
 
     static struct option long_options[] =
     {
-        { "install",                    no_argument,            NULL, 'i' },
-        { "uninstall",                  no_argument,            NULL, 'u' },
-
-        { "name",                       required_argument,      NULL, 'n' },
-        { "connection-string",          required_argument,      NULL, 'c' },
-        { "log-file",                   required_argument,      NULL, 'l' },
-        { "log-config-file",            required_argument,      NULL, 'L' },
-        { "connection-string-file",     required_argument,      NULL, 'C' },
-        { "hub-config-file",            required_argument,      NULL, 'H' },
-        { "ns-db-file",                 required_argument,      NULL, 'D' },
-        { "proxy",                      required_argument,      NULL, 'p' },
-        { "proxy-user",                 required_argument,      NULL, 'x' },
-        { "proxy-pwd",                  required_argument,      NULL, 'y' },
-        { "token-ttl",                  required_argument,      NULL, 't' },
-#if defined(DEBUG)
-        { "test",                       required_argument,      NULL, 'T' },
-#endif
-        { "only-websocket",             no_argument,            NULL, 'w' },
-        { "hidden",                     no_argument,            NULL, 'd' },
-        { "help",                       no_argument,            NULL, 'h' },
-        { "version",                    no_argument,            NULL, 'v' },
-        { 0,                            0,                      NULL,  0  }
+        { "install",                        no_argument,                 NULL, 'i' },
+        { "uninstall",                      no_argument,                 NULL, 'u' },
+        { "only-websocket",                 no_argument,                 NULL, 'w' },
+        { "daemonize",                      no_argument,                 NULL, 'd' },
+        { "help",                           no_argument,                 NULL, 'h' },
+        { "version",                        no_argument,                 NULL, 'v' },
+        { "log-to-iothub",                  no_argument,                 NULL, 'T' },
+        { "allow-fs-browsing",              no_argument,                 NULL, 'F' },
+        { "allow-ws-unsecure",              no_argument,                 NULL, 'W' },
+        { "bind-to-device",                 required_argument,           NULL, 'b' },
+        { "blacklisted-ports",              required_argument,           NULL, 'r' },
+        { "import",                         required_argument,           NULL, 's' },
+        { "name",                           required_argument,           NULL, 'n' },
+        { "domain",                         required_argument,           NULL, 'N' },
+        { "connection-string",              required_argument,           NULL, 'c' },
+        { "log-file",                       required_argument,           NULL, 'l' },
+        { "log-config-file",                required_argument,           NULL, 'L' },
+        { "connection-string-file",         required_argument,           NULL, 'C' },
+        { "hub-config-file",                required_argument,           NULL, 'H' },
+        { "db-file",                        required_argument,           NULL, 'D' },
+        { "proxy",                          required_argument,           NULL, 'p' },
+        { "proxy-user",                     required_argument,           NULL, 'x' },
+        { "proxy-pwd",                      required_argument,           NULL, 'y' },
+        { "token-ttl",                      required_argument,           NULL, 't' },
+        { 0,                                0,                           NULL,  0  }
     };
 
     do
@@ -249,25 +252,45 @@ static int32_t prx_host_init_from_command_line(
         // Parse options
         while (result == er_ok)
         {
-            c = getopt_long(argc, argv, "dhwsiuc:t:n:L:l:C:D:p:u:b:T:",
+            c = getopt_long(argc, argv, "iuwWdhvTFr:s:n:N:c:l:L:C:H:D:p:x:y:t:b:",
                 long_options, &option_index);
             if (c == -1)
                 break;
-
-            if (long_options[option_index].has_arg == required_argument && !optarg)
-            {
-                printf("ERROR: Missing arg for %s option. \n\n", 
-                    long_options[option_index].name);
-                result = er_arg;
-                break;
-            }
             switch (c)
             {
+            case 'W':
             case 'w':
-                __prx_config_set_int(prx_config_key_connect_flag, 1);
+                if (0 == (pal_caps() & pal_cap_wsclient))
+                {
+                    printf("ERROR: Websocket not supported!\n");
+                    result = er_arg;
+                    break;
+                }
+                tmp = __prx_config_get_int(prx_config_key_connect_flag, 0);
+                __prx_config_set_int(prx_config_key_connect_flag,
+                    tmp | (c == 'w' ? 0x1 : 0x2));
                 break;
             case 'p':
                 __prx_config_set(prx_config_key_proxy_host, optarg);
+                break;
+            case 'T':
+                __prx_config_set_int(prx_config_key_log_telemetry, 1);
+                break;
+            case 'F':
+                __prx_config_set_int(prx_config_key_browse_fs, 1);
+                break;
+            case 'r':
+                result = string_parse_range_list(optarg, NULL, NULL);
+                if (result != er_ok)
+                {
+                    printf("ERROR: Bad arg for --blacklisted-ports option (%.128s). \n\n",
+                        optarg ? optarg : "");
+                    break;
+                }
+                __prx_config_set(prx_config_key_restricted_ports, optarg);
+                break;
+            case 'b':
+                __prx_config_set(prx_config_key_bind_device, optarg);
                 break;
             case 'x':
                 __prx_config_set(prx_config_key_proxy_user, optarg);
@@ -292,25 +315,54 @@ static int32_t prx_host_init_from_command_line(
             case 'v':
 #if defined(MODULE_VERSION)
                 printf("Version: " MODULE_VERSION "\n");
+#else
+                printf("Version: <UNKNOWN>\n");
 #endif
-                break;
-            case 'T':
-                is_test = true;
-                if (!optarg)
-                    break;
-                loops = atoi(optarg);
-                if (!loops)
-                {
-                    printf("ERROR: Bad arg for --test option (%s). \n\n",
-                        optarg ? optarg : "");
-                    result = er_arg;
-                }
                 break;
             case 'n':
                 server_name = optarg;
                 break;
+            case 'N':
+                domain = optarg;
+                break;
+            case 's':
+                if (0 == (pal_caps() & pal_cap_cred))
+                {
+                    printf("ERROR: Secret store not supported on this platform!\n");
+                    result = er_arg;
+                    break;
+                }
+                if (cs)
+                {
+                    printf("ERROR: Multiple connection string arguments"
+                        " encountered...\n\n");
+                    result = er_arg;
+                    break;
+                }
+                printf("Importing connection string...\n");
+                __prx_config_set(prx_config_key_policy_import, optarg);
+                should_exit = true;
+                c_string = optarg;
+                if (c_string && strlen(c_string) > 0)
+                    result = io_cs_create_from_string(c_string, &cs);
+                else
+                    result = er_arg;
+                if (result != er_ok)
+                    printf("ERROR: Malformed --import argument. \n\n");
+                break;
             case 'c':
-                result = io_cs_create_from_string(optarg, &cs);
+                if (cs)
+                {
+                    printf("ERROR: Multiple connection string arguments"
+                        " encountered...\n\n");
+                    result = er_arg;
+                    break;
+                }
+                c_string = optarg;
+                if (c_string && strlen(c_string) > 0)
+                    result = io_cs_create_from_string(c_string, &cs);
+                else
+                    result = er_arg;
                 if (result != er_ok)
                     printf("ERROR: Malformed --connection-string argument. \n\n");
                 break;
@@ -318,16 +370,23 @@ static int32_t prx_host_init_from_command_line(
                 ns_registry = optarg;
                 break;
             case 'C':
+                if (cs)
+                {
+                    printf("ERROR: Multiple connection string arguments"
+                        " encountered...\n\n");
+                    result = er_arg;
+                    break;
+                }
                 result = io_cs_create_from_raw_file(optarg, &cs);
                 if (result != er_ok)
                     printf("ERROR: Failed to load iothubowner connection string from "
-                        "--connection-string-file '%s' arg. \n\n", optarg ? optarg : "");
+                        "--connection-string-file '%.128s' arg. \n\n", optarg ? optarg : "");
                 break;
             case 'H':
                 result = prx_ns_iot_hub_create(optarg, &host->remote);
                 if (result != er_ok)
                     printf("ERROR: Failed to load iot hub registry from "
-                        "--hub-config-file '%s' arg. \n\n", optarg ? optarg : "");
+                        "--hub-config-file '%.128s' arg. \n\n", optarg ? optarg : "");
                 break;
             case 'L':
                 log_config = optarg;
@@ -348,33 +407,38 @@ static int32_t prx_host_init_from_command_line(
         if (result != er_ok)
             break;
 
-        if ((is_install && is_uninstall) ||
-            (is_test && is_install) ||
-            (is_test && is_uninstall))
+        if (is_install && is_uninstall)
         {
             printf("ERROR: Cannot use --install and --uninstall together...");
             result = er_arg;
             break;
         }
 
-        if (log_config && log_file) 
+        if (log_config && log_file)
             printf("WARNING: --log-file overrides --log-config-file option...");
-
         if (log_config)
         {
             // Configure logging
-            result = pal_get_real_path(
-                log_config ? log_config : "log.config", &log_config);
+            result = pal_get_real_path(log_config ? log_config : "log.config", &log_config);
             if (result != er_ok)
                 break;
+        }
+        else if (!log_file)
+        {
+            // try loading default log configuration file
+            result = pal_get_real_path("log.config", &log_config);
+            if (result == er_ok && !pal_file_exists(log_config))
+            {
+                pal_free_path(log_config);
+                log_config = NULL;
+            }
+        }
 
+        if (log_config)
+        {
             result = log_read_config(log_config);
             if (result != er_ok)
-            {
-                printf("WARNING: Logging config file %s was not found. \n\n", 
-                    log_config);
-            }
-
+                printf("WARNING: Logging config file %s was not used. \n\n", log_config);
             pal_free_path(log_config);
             log_config = NULL;
         }
@@ -390,6 +454,17 @@ static int32_t prx_host_init_from_command_line(
             }
         }
 
+        if (!cs)
+        {
+            c_string = getenv("_HUB_CS");
+            if (c_string && strlen(c_string) > 0)
+            {
+                result = io_cs_create_from_string(c_string, &cs);
+                if (result != er_ok)
+                    break;
+            }
+        }
+
         // Load registry from file or create in memory one if no file specified
         result = prx_ns_generic_create(ns_registry, &host->local);
         if (result != er_ok)
@@ -398,23 +473,48 @@ static int32_t prx_host_init_from_command_line(
             break;
         }
 
-        if (!host->remote)
+        if (cs && io_cs_get_device_id(cs))
         {
-            // Ensure we have the secrets to create the remote registry
-            if (!cs)
+            if (is_install || is_uninstall || server_name)
             {
-                (void)io_cs_create_from_string(getenv("_HUB_CS"), &cs);
-            }
-
-            // If we want to install or uninstall we will need secrets
-            if (!cs && (is_install || is_uninstall))
-            {
-                printf("ERROR: Missing --connection-string option. \n\n");
+                printf("ERROR: A device connection string cannot be used for -i or -u or -n");
                 result = er_arg;
                 break;
             }
 
-            if (cs)
+            if (should_exit)
+                break; // Exit now, a user might have just wanted to import the string
+
+            // If connection string is proxy connection string add to local registry
+            result = prx_ns_entry_create_from_cs(
+                prx_ns_entry_type_startup | prx_ns_entry_type_proxy, NULL, cs, &entry);
+            if (result != er_ok)
+                break;
+
+            result = prx_ns_create_entry(host->local, entry);
+            if (result != er_ok)
+            {
+                printf("ERROR: Failed to add device connection string to local registry");
+                break;
+            }
+            // Ok, done...
+            break;
+        }
+
+        // Handle install / uninstall
+        if (!host->remote)
+        {
+            if (!cs)
+            {
+                if (is_install || is_uninstall)
+                {
+                    // If we want to install or uninstall we need a policy connection string
+                    printf("ERROR: Missing --connection-string option with policy. \n\n");
+                    result = er_arg;
+                    break;
+                }
+            }
+            else
             {
                 result = prx_ns_iot_hub_create_from_cs(cs, &host->remote);
                 if (result != er_ok)
@@ -426,113 +526,149 @@ static int32_t prx_host_init_from_command_line(
             }
         }
 
-        if (!ns_registry && !is_install && !is_uninstall && !is_test)
+        if (!ns_registry && !is_install && !is_uninstall)
         {
-            if (host->remote)
-                is_install = true; // Always install without args
-            else
-                should_exit = true;  // Always exit
-        }
+            if (should_exit) // Exit now
+                break;
 
-        if (is_test)
-        {
-            if (loops > 1 && server_name)
-                loops = 1;
-            host->uninstall_on_exit = true;
-        }
-
-        if (is_install || is_uninstall || is_test)
-        {
-            for (int i = 0; i < loops; i++)
+            // If we should not exit, we must try to install a proxy to run
+            is_install = true;
+            if (!host->remote)
             {
-                // Ensure we have a name
-                if (!server_name)
-                {
-                    if (!is_test)
-                        result = pal_gethostname(buffer, _countof(buffer));
-                    else
-                    {
-                        result = io_ref_new(&test);
-                        if (result != er_ok)
-                        {
-                            printf("ERROR: Failed making id for proxy server. \n\n");
-                            break;
-                        }
-                        result = io_ref_to_string(&test, buffer, _countof(buffer));
-                    }
-                    if (result != er_ok)
-                        break;
-                    server_name = buffer;
-                }
-                else if (is_uninstall && 0 == string_compare(server_name, "*"))
-                    server_name = NULL;  // Remove all!
-
-                // Run install/uninstall
-                /**/ if (is_install || is_test)
-                    result = prx_host_install_server(host, server_name);
-                else if (is_uninstall)
-                    result = prx_host_uninstall_server(host, server_name);
-
-                if (result != er_ok)
-                {
-                    printf("ERROR: %s %s failed! Check parameters...",
-                        prx_err_string(result), !is_uninstall ? "Install" : "Uninstall");
-                    break;
-                }
-                printf("Proxy %s %s\n", server_name, 
-                    !is_uninstall ? "installed" : "uninstalled");
-                server_name = NULL;
+                // Empty local registry and no remote, nothing to do...
+                printf("ERROR: Cannot connect without connection strings...");
+                result = er_arg;
+                break;
             }
         }
+
+        if (is_install || is_uninstall)
+        {
+            // Ensure we have a name
+            if (!server_name)
+            {
+                result = pal_gethostname(buffer, _countof(buffer));
+                if (result != er_ok)
+                    break;
+                server_name = buffer;
+            }
+            else if (is_uninstall && 0 == string_compare(server_name, "*"))
+                server_name = NULL;  // Remove all!
+
+            // Run install/uninstall
+            /**/ if (is_install)
+                result = prx_host_install_server(host, server_name, domain);
+            else if (is_uninstall)
+                result = prx_host_uninstall_server(host, server_name);
+
+            if (result != er_ok)
+            {
+                printf("ERROR: %s %s failed! Check parameters...\n",
+                    prx_err_string(result), !is_uninstall ? "Install" : "Uninstall");
+                break;
+            }
+            printf("%s %s\n", server_name ? server_name : "All", !is_uninstall ?
+                "installed" : "uninstalled");
+            server_name = NULL;
+        }
         break;
-    } 
+    }
     while (0);
 
     if (cs)
         io_cs_free(cs);
-    if (should_exit)
+    if (entry)
+        prx_ns_entry_release(entry);
+    if (should_exit && !host->hidden && result == er_ok)
+    {
+        printf("Success.\n");
         return er_aborted;
+    }
     if (result != er_arg)
+    {
+        if (result != er_ok)
+            printf("Operation failed.\n");
         return result;
+    }
 
-    printf(" Proxy command line options:                                               \n");
-    printf(" -i, --install      Installs a proxy server in the IoT Hub device registry \n");
-    printf("                    and creates a local database entry, then exits.        \n");
-    printf("                    Requires -c or -C, or $_HUB_CS.                        \n");
-    printf(" -u, --uninstall    Uninstalls proxy server on Iot Hub and removes the     \n");
-    printf("                    entry from the local database file, then exits.        \n");
-    printf("                    Requires -c or -C, or $_HUB_CS.                        \n");
-    printf(" -n, --name <string> Name of server to install or uninstall. If -n is not  \n");
-    printf("                    specified, hostname is used.                           \n");
-    printf(" -c, --connection-string <string> iothubowner connection string for install\n");
-    printf("                    or uninstall.                                          \n");
-    printf(" -C, --connection-string-file <file-name> same as above but read from file.\n");
-    printf("                    If -c or C are not provided, connection string is read \n");
-    printf("                    from $_HUB_CS environment variable.                    \n");
-    printf(" -D, --ns-db-file <file-name> Local name service database file to use. If  \n");
-    printf("                    not provided keeps name service database in memory.    \n");
-#if !defined(NO_ZLOG)                                                              
-    printf(" -L, --log-config-file <file-name> Log configuration file to use. Defaults \n");
-    printf("                    to ./log.config.                                       \n");
-    printf(" -l, --log-file     Or simpler, a file to log to using standard formatting.\n");
-#endif                                                                             
-    printf(" -t, --token-ttl <time-to-live-in-seconds> for all sas tokens provided to  \n");
-    printf("                    Azure, if you prefer a value different from default.   \n");
-    printf("     --proxy-user <user-name>                                              \n");
-    printf("     --proxy-pwd <password>                                                \n");
-    printf(" -p, --proxy <host:port> Local web proxy to use for all outbound traffic,  \n");
-    printf("                    with user name and password if required.               \n");
-    printf(" -w, --only-websocket Always use websockets for outbound connections. If   \n");
-    printf("                    not set, Azure connection will failover if opening a   \n");
-    printf("                    raw socket connection fails.                           \n");
-    printf(" -v, --version	Prints the version information for this binary.        \n");
-#if defined(EXPERIMENTAL)                                                         
-    printf(" -H, --hub-config-file <file-name> JSON encoded list of iot hub entries    \n");
-    printf("                    for a multi hub proxy. Each hub is loaded into a       \n");
-    printf("                    composite iot hub name service.                        \n");
-    printf(" -d, --hidden       Runs the proxy as a service/daemon, otherwise runs     \n");
-    printf("                    proxy host process as console process.                 \n");
+    printf(" Command line options:                                                      \n");
+    printf(" -c, --connection-string string     A connection string to use. This can be \n");
+    printf("                                    either a policy connection string for -i\n");
+    printf("                                    or -u, or a device connection string,   \n");
+    printf("                                    used to connect to Iot Hub.             \n");
+    if (pal_caps() & pal_cap_cred)
+    {
+    printf(" -s, --import string                While device connection strings are     \n");
+    printf("                                    automatically persisted into the user's \n");
+    printf("                                    secret store on your device, policy keys\n");
+    printf("                                    are not. Use this option to import and  \n");
+    printf("                                    persist any shared access keys.         \n");
+    }
+    if (pal_caps() & pal_cap_file)
+    {
+    printf(" -C, --connection-string-file file  same as -c but read from file. If -c or \n");
+    printf("                                    -C options are not provided, connection \n");
+    printf("                                    string is read from $_HUB_CS environment\n");
+    printf("                                    variable.                               \n");
+    printf(" -F, --allow-fs-browsing            Allow clients to browse the file system.\n");
+    }
+    printf(" -r, --blacklisted-ports range      Use this setting to blacklist ports the \n");
+    printf("                                    proxy must never connect to. The value  \n");
+    printf("                                    is a semicolon delimited list of values \n");
+    printf("                                    that can contain ranges, for example -r \n");
+    printf("                                    0-4839;4842-65536 restricts connections \n");
+    printf("                                    to all ports except for 4840 and 4841.  \n");
+    printf(" -b, --bind-to-device string        Use this setting to direct the proxy to \n");
+    printf("                                    bind sockets to the named device.       \n");
+    printf("                                    Note that if this fails, e.g. due to    \n");
+    printf("                                    rights, the default OS behavior applies.\n");
+    if (pal_caps() & pal_cap_wsclient)
+    {
+    printf(" -w, --only-websocket               Always use websockets for outbound      \n");
+    printf("                                    connections. Without -w Azure connection\n");
+    printf("                                    will failover if opening a raw tcp/ip   \n");
+    printf("                                    connection to Azure fails.              \n");
+    printf(" -p, --proxy host:port              Local web proxy to use for all outbound \n");
+    printf("     --proxy-user string            traffic, with user name and password if \n");
+    printf("     --proxy-pwd string             needed.                                 \n");
+    }
+    printf(" -T, --log-to-iothub                Send raw log output to IoT Hub on the   \n");
+    printf("                                    proxy telemetry endpoint.               \n");
+#if !defined(NO_ZLOG)
+    printf(" -l, --log-file file                File to log to using simple formatting. \n");
+    printf(" -L, --log-config-file file         For more advanced settings, the zlog    \n");
+    printf("                                    configuration file to use. Defaults to  \n");
+    printf("                                    ./log.config.                           \n");
 #endif
+    printf(" -i, --install                      Installs a proxy server in the IoT Hub  \n");
+    printf("                                    device registry, then exits.            \n");
+    printf(" -u, --uninstall                    Uninstalls proxy server on Iot Hub then \n");
+    printf("                                    exits.                                  \n");
+    printf("                                    -i and -u requires -c or -C, or $_HUB_CS\n");
+    printf("                                    with 'manage' policy connection string  \n");
+    printf("                                    and access to the shared access key.    \n");
+    printf(" -n, --name <string>                Name of proxy to install or uninstall.  \n");
+    printf("                                    If -n is not provided, hostname is used.\n");
+    printf("     --domain <string>              Virtual domain the proxy is assigned to.\n");
+    printf("                                    Use for -i. If not provided, no domain  \n");
+    printf("                                    is assigned.                            \n");
+    if (pal_caps() & pal_cap_file)
+    {
+    printf(" -D, --db-file <file-name>          Local storage for proxy connection info.\n");
+    printf("                                    This is where newly registered instances\n");
+    printf("                                    are persisted. If not specified,        \n");
+    printf("                                    connection string is kept in memory.    \n");
+    }
+    printf(" -t, --token-ttl int                Time to live in seconds for all shared  \n");
+    printf("                                    access tokens provided to IoT Hub if you\n");
+    printf("                                    prefer a value different from default.  \n");
+#if defined(EXPERIMENTAL)
+    printf(" -d, --daemonize                    Runs the proxy as a service/daemon,     \n");
+    printf("                                    otherwise runs proxy host process as    \n");
+    printf("                                    console process.                        \n");
+#endif
+    printf(" -v, --version                      Prints the version information for this \n");
+    printf("                                    binary and exits.                       \n");
     return er_arg;
 }
 
@@ -546,7 +682,7 @@ static void prx_host_modules_stop(
     int32_t result;
     dbg_assert_ptr(host);
     prx_host_module_t* next;
-    
+
     while (!DList_IsListEmpty(&host->modules))
     {
         next = containingRecord(
@@ -574,7 +710,7 @@ static void prx_host_modules_stop(
 }
 
 //
-// Load all startup modules/servers 
+// Load all startup modules/servers
 //
 static int32_t prx_host_modules_start(
     prx_host_t* host
@@ -584,17 +720,17 @@ static int32_t prx_host_modules_start(
     prx_ns_result_t* startup;
     prx_ns_entry_t* proxy_entry;
     prx_host_module_t* module;
-    
+
     dbg_assert_ptr(host);
     dbg_assert_ptr(host->local);
 
-    result = prx_ns_get_entry_by_type(host->local, 
+    result = prx_ns_get_entry_by_type(host->local,
         prx_ns_entry_type_startup, &startup);
     if (result == er_not_found)
         return er_ok;
     if (result != er_ok)
         return result;
-    do 
+    do
     {
         proxy_entry = prx_ns_result_pop(startup);
         if (!proxy_entry)
@@ -610,8 +746,7 @@ static int32_t prx_host_modules_start(
 
         DList_InsertTailList(&host->modules, &module->link);
         module->entry = proxy_entry;
-        module->module = host->module->on_create(
-            NULL, module->entry);
+        module->module = host->module->on_create(NULL, module->entry);
 
         if (!module->module)
         {
@@ -620,7 +755,7 @@ static int32_t prx_host_modules_start(
         }
     }
     while (result == er_ok);
-    
+
     if (startup)
         prx_ns_result_release(startup);
     return result;
@@ -635,8 +770,7 @@ int32_t prx_host_start(
 {
     int32_t result;
 
-    if (!host)
-        return er_fault;
+    chk_arg_fault_return(host);
     do
     {
         host->running = true;
@@ -662,8 +796,7 @@ int32_t prx_host_stop(
     prx_host_t* host
 )
 {
-    if (!host)
-        return er_fault;
+    chk_arg_fault_return(host);
     if (!host->running)
         return er_ok;
 
@@ -679,8 +812,7 @@ int32_t prx_host_sig_wait(
     prx_host_t* host
 )
 {
-    if (!host)
-        return er_fault;
+    chk_arg_fault_return(host);
     return signal_wait(host->exit_signal, ~0);
 }
 
@@ -691,14 +823,13 @@ int32_t prx_host_sig_break(
     prx_host_t* host
 )
 {
-    if (!host)
-        return er_fault;
+    chk_arg_fault_return(host);
     if (!host->exit_signal)
         return er_bad_state;
     return signal_set(host->exit_signal);
 }
 
-// 
+//
 // Returns a reference to the host
 //
 int32_t prx_host_get(
@@ -706,14 +837,14 @@ int32_t prx_host_get(
 )
 {
     int32_t result;
-    if (!cloned)
-        return er_fault;
+    chk_arg_fault_return(cloned);
     if (!process_host)
     {
         // Lazy create
         result = prx_host_init(proxy_type_server, 0, NULL);
         if (result != er_ok)
             return result;
+        dbg_assert_ptr(process_host);
     }
 
     INC_REF(prx_host_t, process_host);
@@ -734,7 +865,7 @@ io_ref_t* prx_host_get_id(
 }
 
 //
-// returns the name service 
+// returns the name service
 //
 prx_ns_t* prx_host_get_ns(
     prx_host_t* host
@@ -871,10 +1002,10 @@ int32_t prx_host_init(
             break;
 
         // Host created
-        log_info(process_host->log, "Proxy host created!");
+        log_trace(process_host->log, "Proxy host created!");
         DEC_REF(prx_host_t, process_host); // weak reference
         return er_ok;
-            
+
     } while (0);
 
     prx_host_release(process_host);
@@ -889,7 +1020,7 @@ const char* trusted_certs(
 )
 {
     return
-    /* Baltimore */
+    /* DigiCert Baltimore Root */
     "-----BEGIN CERTIFICATE-----\r\n"
     "MIIDdzCCAl+gAwIBAgIEAgAAuTANBgkqhkiG9w0BAQUFADBaMQswCQYDVQQGEwJJ\r\n"
     "RTESMBAGA1UEChMJQmFsdGltb3JlMRMwEQYDVQQLEwpDeWJlclRydXN0MSIwIAYD\r\n"
@@ -911,75 +1042,87 @@ const char* trusted_certs(
     "ksLi4xaNmjICq44Y3ekQEe5+NauQrz4wlHrQMz2nZQ/1/I6eYs9HRCwBXbsdtTLS\r\n"
     "R9I4LtD+gdwyah617jzV/OeBHRnDJELqYzmp\r\n"
     "-----END CERTIFICATE-----\r\n"
-    /* MSIT */
+    /*DigiCert Global Root CA*/
     "-----BEGIN CERTIFICATE-----\r\n"
-    "MIIFhjCCBG6gAwIBAgIEByeaqTANBgkqhkiG9w0BAQsFADBaMQswCQYDVQQGEwJJ\r\n"
-    "RTESMBAGA1UEChMJQmFsdGltb3JlMRMwEQYDVQQLEwpDeWJlclRydXN0MSIwIAYD\r\n"
-    "VQQDExlCYWx0aW1vcmUgQ3liZXJUcnVzdCBSb290MB4XDTEzMTIxOTIwMDczMloX\r\n"
-    "DTE3MTIxOTIwMDY1NVowgYsxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5n\r\n"
-    "dG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9y\r\n"
-    "YXRpb24xFTATBgNVBAsTDE1pY3Jvc29mdCBJVDEeMBwGA1UEAxMVTWljcm9zb2Z0\r\n"
-    "IElUIFNTTCBTSEEyMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA0eg3\r\n"
-    "p3aKcEsZ8CA3CSQ3f+r7eOYFumqtTicN/HJq2WwhxGQRlXMQClwle4hslAT9x9uu\r\n"
-    "e9xKCLM+FvHQrdswbdcaHlK1PfBHGQPifaa9VxM/VOo6o7F3/ELwY0lqkYAuMEnA\r\n"
-    "iusrr/466wddBvfp/YQOkb0JICnobl0JzhXT5+/bUOtE7xhXqwQdvDH593sqE8/R\r\n"
-    "PVGvG8W1e+ew/FO7mudj3kEztkckaV24Rqf/ravfT3p4JSchJjTKAm43UfDtWBpg\r\n"
-    "lPbEk9jdMCQl1xzrGZQ1XZOyrqopg3PEdFkFUmed2mdROQU6NuryHnYrFK7sPfkU\r\n"
-    "mYsHbrznDFberL6u23UykJ5jvXS/4ArK+DSWZ4TN0UI4eMeZtgzOtg/pG8v0Wb4R\r\n"
-    "DsssMsj6gylkeTyLS/AydGzzk7iWa11XWmjBzAx5ihne9UkCXgiAAYkMMs3S1pbV\r\n"
-    "S6Dz7L+r9H2zobl82k7X5besufIlXwHLjJaoKK7BM1r2PwiQ3Ov/OdgmyBKdHJqq\r\n"
-    "qcAWjobtZ1KWAH8Nkj092XA25epCbx+uleVbXfjQOsfU3neG0PyeTuLiuKloNwnE\r\n"
-    "OeOFuInzH263bR9KLxgJb95KAY8Uybem7qdjnzOkVHxCg2i4pd+/7LkaXRM72a1o\r\n"
-    "/SAKVZEhZPnXEwGgCF1ZiRtEr6SsxwUQ+kFKqPsCAwEAAaOCASAwggEcMBIGA1Ud\r\n"
-    "EwEB/wQIMAYBAf8CAQAwUwYDVR0gBEwwSjBIBgkrBgEEAbE+AQAwOzA5BggrBgEF\r\n"
-    "BQcCARYtaHR0cDovL2N5YmVydHJ1c3Qub21uaXJvb3QuY29tL3JlcG9zaXRvcnku\r\n"
-    "Y2ZtMA4GA1UdDwEB/wQEAwIBhjAdBgNVHSUEFjAUBggrBgEFBQcDAQYIKwYBBQUH\r\n"
-    "AwIwHwYDVR0jBBgwFoAU5Z1ZMIJHWMys+ghUNoZ7OrUETfAwQgYDVR0fBDswOTA3\r\n"
-    "oDWgM4YxaHR0cDovL2NkcDEucHVibGljLXRydXN0LmNvbS9DUkwvT21uaXJvb3Qy\r\n"
-    "MDI1LmNybDAdBgNVHQ4EFgQUUa8kJpz0aCJXgCYrO0ZiFXsezKUwDQYJKoZIhvcN\r\n"
-    "AQELBQADggEBAHaFxSMxH7Rz6qC8pe3fRUNqf2kgG4Cy+xzdqn+I0zFBNvf7+2ut\r\n"
-    "mIx4H50RZzrNS+yovJ0VGcQ7C6eTzuj8nVvoH8tWrnZDK8cTUXdBqGZMX6fR16p1\r\n"
-    "xRspTMn0baFeoYWTFsLLO6sUfUT92iUphir+YyDK0gvCNBW7r1t/iuCq7UWm6nnb\r\n"
-    "2DVmVEPeNzPR5ODNV8pxsH3pFndk6FmXudUu0bSR2ndx80oPSNI0mWCVN6wfAc0Q\r\n"
-    "negqpSDHUJuzbEl4K1iSZIm4lTaoNKrwQdKVWiRUl01uBcSVrcR6ozn7eQaKm6ZP\r\n"
-    "2SL6RE4288kPpjnngLJev7050UblVUfbvG4=\r\n"
+    "MIIDrzCCApegAwIBAgIQCDvgVpBCRrGhdWrJWZHHSjANBgkqhkiG9w0BAQUFADBh\r\n"
+    "MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\r\n"
+    "d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBD\r\n"
+    "QTAeFw0wNjExMTAwMDAwMDBaFw0zMTExMTAwMDAwMDBaMGExCzAJBgNVBAYTAlVT\r\n"
+    "MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\r\n"
+    "b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IENBMIIBIjANBgkqhkiG\r\n"
+    "9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4jvhEXLeqKTTo1eqUKKPC3eQyaKl7hLOllsB\r\n"
+    "CSDMAZOnTjC3U/dDxGkAV53ijSLdhwZAAIEJzs4bg7/fzTtxRuLWZscFs3YnFo97\r\n"
+    "nh6Vfe63SKMI2tavegw5BmV/Sl0fvBf4q77uKNd0f3p4mVmFaG5cIzJLv07A6Fpt\r\n"
+    "43C/dxC//AH2hdmoRBBYMql1GNXRor5H4idq9Joz+EkIYIvUX7Q6hL+hqkpMfT7P\r\n"
+    "T19sdl6gSzeRntwi5m3OFBqOasv+zbMUZBfHWymeMr/y7vrTC0LUq7dBMtoM1O/4\r\n"
+    "gdW7jVg/tRvoSSiicNoxBN33shbyTApOB6jtSj1etX+jkMOvJwIDAQABo2MwYTAO\r\n"
+    "BgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUA95QNVbR\r\n"
+    "TLtm8KPiGxvDl7I90VUwHwYDVR0jBBgwFoAUA95QNVbRTLtm8KPiGxvDl7I90VUw\r\n"
+    "DQYJKoZIhvcNAQEFBQADggEBAMucN6pIExIK+t1EnE9SsPTfrgT1eXkIoyQY/Esr\r\n"
+    "hMAtudXH/vTBH1jLuG2cenTnmCmrEbXjcKChzUyImZOMkXDiqw8cvpOp/2PV5Adg\r\n"
+    "06O/nVsJ8dWO41P0jmP6P6fbtGbfYmbW0W5BjfIttep3Sp+dWOIrWcBAI+0tKIJF\r\n"
+    "PnlUkiaY4IBIqDfv8NZ5YBberOgOzW6sRBc4L0na4UU+Krk2U886UAb3LujEV0ls\r\n"
+    "YSEY1QSteDwsOoBrp+uvFRTp2InBuThs4pFsiv9kuXclVzDAGySj4dzp30d8tbQk\r\n"
+    "CAUw7C29C79Fv1C5qfPrmAESrciIxpg0X40KPMbp1ZWVbd4=\r\n"
     "-----END CERTIFICATE-----\r\n"
-    /* *.azure-devices.net */
+    /*D-TRUST Root Class 3 CA 2 2009*/
     "-----BEGIN CERTIFICATE-----\r\n"
-    "MIIGcjCCBFqgAwIBAgITWgABtrNbz7vBeV0QWwABAAG2szANBgkqhkiG9w0BAQsF\r\n"
-    "ADCBizELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcT\r\n"
-    "B1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEVMBMGA1UE\r\n"
-    "CxMMTWljcm9zb2Z0IElUMR4wHAYDVQQDExVNaWNyb3NvZnQgSVQgU1NMIFNIQTIw\r\n"
-    "HhcNMTUwODI3MDMxODA0WhcNMTcwODI2MDMxODA0WjAeMRwwGgYDVQQDDBMqLmF6\r\n"
-    "dXJlLWRldmljZXMubmV0MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA\r\n"
-    "nXC/qBUdlnfIm5K3HYu0o/Mb5tNNcsr0xy4Do0Puwq2W1tz0ZHvIIS9VOANhkNCb\r\n"
-    "VyOncnP6dvmM/rYYKth/NQ8RUiZOYlROZ0SYC8cvxq9WOln4GXtEU8vNVqJbYrJj\r\n"
-    "rPMHfxqLzTE/0ZnQffnDT3iMUE9kFLHow0YgaSRU0KZsc9KAROmzBzu+QIB1WGKX\r\n"
-    "D7CN361tG1UuN68Bz7MSnbgk98Z+DjDxfusoDhiiy/Y9MLOJMt4WIy5BqL3lfLnn\r\n"
-    "r+JLqmpiFuyVUDacFQDprYJ1/AFgcsKYu/ydmASARPzqJhOGaC2sZP0U5oBOoBzI\r\n"
-    "bz4tfn8Bi0kJKmS53mQt+wIDAQABo4ICOTCCAjUwCwYDVR0PBAQDAgSwMB0GA1Ud\r\n"
-    "JQQWMBQGCCsGAQUFBwMBBggrBgEFBQcDAjAdBgNVHQ4EFgQUKpYehBSNA53Oxivn\r\n"
-    "aLCz3+eFUJ0wXQYDVR0RBFYwVIITKi5henVyZS1kZXZpY2VzLm5ldIIaKi5hbXFw\r\n"
-    "d3MuYXp1cmUtZGV2aWNlcy5uZXSCISouc3UubWFuYWdlbWVudC1henVyZS1kZXZp\r\n"
-    "Y2VzLm5ldDAfBgNVHSMEGDAWgBRRryQmnPRoIleAJis7RmIVex7MpTB9BgNVHR8E\r\n"
-    "djB0MHKgcKBuhjZodHRwOi8vbXNjcmwubWljcm9zb2Z0LmNvbS9wa2kvbXNjb3Jw\r\n"
-    "L2NybC9tc2l0d3d3Mi5jcmyGNGh0dHA6Ly9jcmwubWljcm9zb2Z0LmNvbS9wa2kv\r\n"
-    "bXNjb3JwL2NybC9tc2l0d3d3Mi5jcmwwcAYIKwYBBQUHAQEEZDBiMDwGCCsGAQUF\r\n"
-    "BzAChjBodHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20vcGtpL21zY29ycC9tc2l0d3d3\r\n"
-    "Mi5jcnQwIgYIKwYBBQUHMAGGFmh0dHA6Ly9vY3NwLm1zb2NzcC5jb20wTgYDVR0g\r\n"
-    "BEcwRTBDBgkrBgEEAYI3KgEwNjA0BggrBgEFBQcCARYoaHR0cDovL3d3dy5taWNy\r\n"
-    "b3NvZnQuY29tL3BraS9tc2NvcnAvY3BzADAnBgkrBgEEAYI3FQoEGjAYMAoGCCsG\r\n"
-    "AQUFBwMBMAoGCCsGAQUFBwMCMA0GCSqGSIb3DQEBCwUAA4ICAQCrjzOSW+X6v+UC\r\n"
-    "u+JkYyuypXN14pPLcGFbknJWj6DAyFWXKC8ihIYdtf/szWIO7VooplSTZ05u/JYu\r\n"
-    "ZYh7fAw27qih9CLhhfncXi5yzjgLMlD0mlbORvMJR/nMl7Yh1ki9GyLnpOqMmO+E\r\n"
-    "yTpOiE07Uyt2uWelLHjMY8kwy2bSRXIp7/+A8qHRaIIdXNtAKIK5jo068BJpo77h\r\n"
-    "4PljCb9JFdEt6sAKKuaP86Y+8oRZ7YzU4TLDCiK8P8n/gQXH0vvhOE/O0n7gWPqB\r\n"
-    "n8KxsnRicop6tB6GZy32Stn8w0qktmQNXOGU+hp8OL6irULWZw/781po6d78nmwk\r\n"
-    "1IFl2TB4+jgyblvJdTM0rx8vPf3F2O2kgsRNs9M5qCI7m+he43Bhue0Fj/h3oIIo\r\n"
-    "Qx7X/uqc8j3VTNE9hf2A4wksSRgRydjAYoo+bduNagC5s7Eucb4mBG0MMk7HAQU9\r\n"
-    "m/gyaxqth6ygDLK58wojSV0i4RiU01qZkHzqIWv5FhhMjbFwyKEc6U35Ps7kP/1O\r\n"
-    "fdGm13ONaYqDl44RyFsLFFiiDYxZFDSsKM0WDxbl9ULAlVc3WR85kEBK6I+pSQj+\r\n"
-    "7/Z5z2zTz9qOFWgB15SegTbjSR7uk9mEVnj9KDlGtG8W1or0EGrrEDP2CMsp0oEj\r\n"
-    "VTJbZAxEaZ3cVCKva5sQUxFMjwG32g==\r\n"
-    "-----END CERTIFICATE-----\r\n";
+    "MIIEMzCCAxugAwIBAgIDCYPzMA0GCSqGSIb3DQEBCwUAME0xCzAJBgNVBAYTAkRF\r\n"
+    "MRUwEwYDVQQKDAxELVRydXN0IEdtYkgxJzAlBgNVBAMMHkQtVFJVU1QgUm9vdCBD\r\n"
+    "bGFzcyAzIENBIDIgMjAwOTAeFw0wOTExMDUwODM1NThaFw0yOTExMDUwODM1NTha\r\n"
+    "ME0xCzAJBgNVBAYTAkRFMRUwEwYDVQQKDAxELVRydXN0IEdtYkgxJzAlBgNVBAMM\r\n"
+    "HkQtVFJVU1QgUm9vdCBDbGFzcyAzIENBIDIgMjAwOTCCASIwDQYJKoZIhvcNAQEB\r\n"
+    "BQADggEPADCCAQoCggEBANOySs96R+91myP6Oi/WUEWJNTrGa9v+2wBoqOADER03\r\n"
+    "UAifTUpolDWzU9GUY6cgVq/eUXjsKj3zSEhQPgrfRlWLJ23DEE0NkVJD2IfgXU42\r\n"
+    "tSHKXzlABF9bfsyjxiupQB7ZNoTWSPOSHjRGICTBpFGOShrvUD9pXRl/RcPHAY9R\r\n"
+    "ySPocq60vFYJfxLLHLGvKZAKyVXMD9O0Gu1HNVpK7ZxzBCHQqr0ME7UAyiZsxGsM\r\n"
+    "lFqVlNpQmvH/pStmMaTJOKDfHR+4CS7zp+hnUquVH+BGPtikw8paxTGA6Eian5Rp\r\n"
+    "/hnd2HN8gcqW3o7tszIFZYQ05ub9VxC1X3a/L7AQDcUCAwEAAaOCARowggEWMA8G\r\n"
+    "A1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFP3aFMSfMN4hvR5COfyrYyNJ4PGEMA4G\r\n"
+    "A1UdDwEB/wQEAwIBBjCB0wYDVR0fBIHLMIHIMIGAoH6gfIZ6bGRhcDovL2RpcmVj\r\n"
+    "dG9yeS5kLXRydXN0Lm5ldC9DTj1ELVRSVVNUJTIwUm9vdCUyMENsYXNzJTIwMyUy\r\n"
+    "MENBJTIwMiUyMDIwMDksTz1ELVRydXN0JTIwR21iSCxDPURFP2NlcnRpZmljYXRl\r\n"
+    "cmV2b2NhdGlvbmxpc3QwQ6BBoD+GPWh0dHA6Ly93d3cuZC10cnVzdC5uZXQvY3Js\r\n"
+    "L2QtdHJ1c3Rfcm9vdF9jbGFzc18zX2NhXzJfMjAwOS5jcmwwDQYJKoZIhvcNAQEL\r\n"
+    "BQADggEBAH+X2zDI36ScfSF6gHDOFBJpiBSVYEQBrLLpME+bUMJm2H6NMLVwMeni\r\n"
+    "acfzcNsgFYbQDfC+rAF1hM5+n02/t2A7nPPKHeJeaNijnZflQGDSNiH+0LS4F9p0\r\n"
+    "o3/U37CYAqxva2ssJSRyoWXuJVrl5jLn8t+rSfrzkGkj2wTZ51xY/GXUl77M/C4K\r\n"
+    "zCUqNQT4YJEVdT1B/yMfGchs64JTBKbkTCJNjYy6zltz7GRUUG3RnFX7acM2w4y8\r\n"
+    "PIWmawomDeCTmGCufsYkl4phX5GOZpIJhzbNi5stPvZR1FDUWSi9g/LMKHtThm3Y\r\n"
+    "Johw1+qRzT65ysCQblrGXnRl11z+o+I=\r\n"
+    "-----END CERTIFICATE-----\r\n"
+    /*WoSign*/
+    "-----BEGIN CERTIFICATE-----\r\n"
+    "MIIFdjCCA16gAwIBAgIQXmjWEXGUY1BWAGjzPsnFkTANBgkqhkiG9w0BAQUFADBV\r\n"
+    "MQswCQYDVQQGEwJDTjEaMBgGA1UEChMRV29TaWduIENBIExpbWl0ZWQxKjAoBgNV\r\n"
+    "BAMTIUNlcnRpZmljYXRpb24gQXV0aG9yaXR5IG9mIFdvU2lnbjAeFw0wOTA4MDgw\r\n"
+    "MTAwMDFaFw0zOTA4MDgwMTAwMDFaMFUxCzAJBgNVBAYTAkNOMRowGAYDVQQKExFX\r\n"
+    "b1NpZ24gQ0EgTGltaXRlZDEqMCgGA1UEAxMhQ2VydGlmaWNhdGlvbiBBdXRob3Jp\r\n"
+    "dHkgb2YgV29TaWduMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAvcqN\r\n"
+    "rLiRFVaXe2tcesLea9mhsMMQI/qnobLMMfo+2aYpbxY94Gv4uEBf2zmoAHqLoE1U\r\n"
+    "fcIiePyOCbiohdfMlZdLdNiefvAA5A6JrkkoRBoQmTIPJYhTpA2zDxIIFgsDcScc\r\n"
+    "f+Hb0v1naMQFXQoOXXDX2JegvFNBmpGN9J42Znp+VsGQX+axaCA2pIwkLCxHC1l2\r\n"
+    "ZjC1vt7tj/id07sBMOby8w7gLJKA84X5KIq0VC6a7fd2/BVoFutKbOsuEo/Uz/4M\r\n"
+    "x1wdC34FMr5esAkqQtXJTpCzWQ27en7N1QhatH/YHGkR+ScPewavVIMYe+HdVHpR\r\n"
+    "aG53/Ma/UkpmRqGyZxq7o093oL5d//xWC0Nyd5DKnvnyOfUNqfTq1+ezEC8wQjch\r\n"
+    "zDBwyYaYD8xYTYO7feUapTeNtqwylwA6Y3EkHp43xP901DfA4v6IRmAR3Qg/UDar\r\n"
+    "uHqklWJqbrDKaiFaafPz+x1wOZXzp26mgYmhiMU7ccqjUu6Du/2gd/Tkb+dC221K\r\n"
+    "mYo0SLwX3OSACCK28jHAPwQ+658geda4BmRkAjHXqc1S+4RFaQkAKtxVi8QGRkvA\r\n"
+    "Sh0JWzko/amrzgD5LkhLJuYwTKVYyrREgk/nkR4zw7CT/xH8gdLKH3Ep3XZPkiWv\r\n"
+    "HYG3Dy+MwwbMLyejSuQOmbp8HkUff6oZRZb9/D0CAwEAAaNCMEAwDgYDVR0PAQH/\r\n"
+    "BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFOFmzw7R8bNLtwYgFP6H\r\n"
+    "EtX2/vs+MA0GCSqGSIb3DQEBBQUAA4ICAQCoy3JAsnbBfnv8rWTjMnvMPLZdRtP1\r\n"
+    "LOJwXcgu2AZ9mNELIaCJWSQBnfmvCX0KI4I01fx8cpm5o9dU9OpScA7F9dY74ToJ\r\n"
+    "MuYhOZO9sxXqT2r09Ys/L3yNWC7F4TmgPsc9SnOeQHrAK2GpZ8nzJLmzbVUsWh2e\r\n"
+    "JXLOC62qx1ViC777Y7NhRCOjy+EaDveaBk3e1CNOIZZbOVtXHS9dCF4Jef98l7VN\r\n"
+    "g64N1uajeeAz0JmWAjCnPv/So0M/BVoG6kQC2nz4SNAzqfkHx5Xh9T71XXG68pWp\r\n"
+    "dIhhWeO/yloTunK0jF02h+mmxTwTv97QRCbut+wucPrXnbes5cVAWubXbHssw1ab\r\n"
+    "R80LzvobtCHXt2a49CUwi1wNuepnsvRtrtWhnk/Yn+knArAdBtaP4/tIEp9/EaEQ\r\n"
+    "PkxROpaw0RPxx9gmrjrKkcRpnd8BKWRRb2jaFOwIQZeQjdCygPLPwj2/kWjFgGce\r\n"
+    "xGATVdVhmVd8upUPYUk6ynW8yQqTP2cOEvIo4jEbwFcW3wh8GcF+Dx+FHgo2fFt+\r\n"
+    "J7x6v+Db9NpSvd4MVHAxkUOVyLzwPt0JfjBkUO1/AaQzZ01oT74V77D2AhGiGxMl\r\n"
+    "OtzCWfHjXEa7ZywCRuoeSKbmW9m1vFGikpbbqsY3Iqb+zCB0oy2pLmvLwIIRIbWT\r\n"
+    "ee5Ehr7XHuQe+w==\r\n"
+    "-----END CERTIFICATE-----\r\n"
+;
 }

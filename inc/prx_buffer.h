@@ -15,7 +15,7 @@ typedef size_t (*prx_buffer_factory_available_t) (
     );
 
 //
-// Allocate buffer 
+// Allocate buffer
 //
 typedef void* (*prx_buffer_alloc_t) (
     void* context,
@@ -59,7 +59,7 @@ typedef void (*prx_buffer_factory_free_t) (
 //
 typedef struct prx_buffer_factory
 {
-    void* context;                     // Buffer buffer_factory implementation 
+    void* context;                      // Buffer buffer_factory implementation
     prx_buffer_alloc_t on_alloc;                           // Allocate a buffer
     prx_buffer_get_size_t on_get_size;        // Returns the size of the buffer
     prx_buffer_set_size_t on_set_size;           // Resize the buffer to length
@@ -110,13 +110,13 @@ decl_internal_2(void*, prx_buffer_new,
 //
 decl_inline_2(size_t, prx_buffer_get_size,
     prx_buffer_factory_t*, buffer_factory,
-    void*, buffer
+    const void*, buffer
 )
 {
     if (!buffer_factory)
         return 0;
     dbg_assert_ptr(buffer_factory->on_get_size);
-    return buffer_factory->on_get_size(buffer_factory->context, buffer);
+    return buffer_factory->on_get_size(buffer_factory->context, (void*)buffer);
 }
 
 //
@@ -128,8 +128,7 @@ decl_inline_3(int32_t, prx_buffer_set_size,
     size_t, length
 )
 {
-    if (!buffer_factory)
-        return er_fault;
+    chk_arg_fault_return(buffer_factory);
     dbg_assert_ptr(buffer_factory->on_set_size);
     return buffer_factory->on_set_size(buffer_factory->context, buffer, length);
 }
@@ -174,11 +173,11 @@ typedef void (*prx_buffer_pool_cb_t)(
 //
 typedef struct prx_pool_config
 {
-    size_t initial_count;                            // 1 == allocate per item
-    size_t max_count;                             // 0 == grows pool on demand
-    size_t low_watermark;                    // if >= high_watermark, set to 0
-    size_t high_watermark;                // if >= max_count, set to max_count
-    prx_buffer_pool_cb_t cb;    // called with true if dip below low_watermark
+    size_t increment_count;                           // 1 == allocate per item
+    size_t max_count;                              // 0 == grows pool on demand
+    size_t low_watermark;                     // if >= high_watermark, set to 0
+    size_t high_watermark;                 // if >= max_count, set to max_count
+    prx_buffer_pool_cb_t cb;     // called with true if dip below low_watermark
     void* context;
 }
 prx_pool_config_t;
@@ -198,8 +197,8 @@ decl_internal_4(int32_t, prx_dynamic_pool_create,
 //
 decl_internal_4(int32_t, prx_fixed_pool_create,
     const char*, name,
-    size_t, fixed_item_size, 
-    prx_pool_config_t*, config,          
+    size_t, fixed_item_size,
+    prx_pool_config_t*, config,
     prx_buffer_factory_t**, pool
 );
 

@@ -41,7 +41,7 @@ compileAsC99()
 #
 add_library(libzlog SHARED ${source_c_files})
 
-target_include_directories(libzlog 
+target_include_directories(libzlog
     PUBLIC ${_PROJECT_INC}
     PUBLIC ${_ZLOG_INC}
     PRIVATE ${_IOTSDK_INC}
@@ -57,11 +57,13 @@ else()
     if(${CMAKE_USE_PTHREADS_INIT})
         target_link_libraries(libzlog PRIVATE pthread)
         target_compile_definitions(libzlog PRIVATE _HAVE_PTHREAD_H=1)
+    else()
+        message(FATAL_ERROR "No pthread found, please install")
     endif()
 endif()
 
 if(WIN32)
   # Place here the install rule for win32
 elseif(LINUX)
-	install (TARGETS libzlog LIBRARY DESTINATION lib )
+    install (TARGETS libzlog LIBRARY DESTINATION lib )
 endif()

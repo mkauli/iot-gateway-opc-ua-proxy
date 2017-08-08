@@ -3,9 +3,12 @@
 
 namespace Microsoft.Azure.Devices.Proxy {
     using System;
+    using System.Collections.Generic;
     using System.Diagnostics;
     using System.Diagnostics.Tracing;
     using System.Globalization;
+    using System.IO;
+    using Microsoft.Azure.Devices.Proxy;
     using Microsoft.Azure.Devices.Proxy.Provider;
 
     /// <summary>
@@ -19,8 +22,7 @@ namespace Microsoft.Azure.Devices.Proxy {
         ProxyEventSource() {
         }
 
-        public class Keywords   // This is a bitvector
-        {
+        public class Keywords {
             public const EventKeywords Client = (EventKeywords)0x0001;
             public const EventKeywords Proxy = (EventKeywords)0x0002;
         }
@@ -31,7 +33,6 @@ namespace Microsoft.Azure.Devices.Proxy {
             if (this.IsEnabled()) {
                 this.WriteEvent(40190, CreateSourceString(source));
             }
-            Trace.TraceInformation($"Listener started ({source}).");
         }
 
         [Event(40191, Message = "Connection accepted: {0}.")]
@@ -52,7 +53,7 @@ namespace Microsoft.Azure.Devices.Proxy {
         [Event(40193, Message = "Stream Exception: {0} - {1} - {2}.")]
         public void StreamException(object source, object stream, Exception e) {
             if (this.IsEnabled()) {
-                this.WriteEvent(40193, CreateSourceString(source), 
+                this.WriteEvent(40193, CreateSourceString(source),
                     CreateSourceString(stream), ExceptionToString(e));
             }
             Trace.TraceInformation($"Stream error: {stream} ... ({source}). {ExceptionToString(e)}");
@@ -63,7 +64,6 @@ namespace Microsoft.Azure.Devices.Proxy {
             if (this.IsEnabled()) {
                 this.WriteEvent(40194, CreateSourceString(source), CreateSourceString(stream));
             }
-            Trace.TraceInformation($"Stream opened: {stream} ... ({source}).");
         }
 
         [Event(40195, Message = "Stream closing: {0} - {1}.")]
@@ -71,7 +71,6 @@ namespace Microsoft.Azure.Devices.Proxy {
             if (this.IsEnabled()) {
                 this.WriteEvent(40195, CreateSourceString(source), CreateSourceString(stream));
             }
-            Trace.TraceInformation($"Stream closing: {stream} ... ({source}).");
         }
 
         [Event(40196, Message = "Stream closed: {0} - {1}.")]
@@ -79,40 +78,113 @@ namespace Microsoft.Azure.Devices.Proxy {
             if (this.IsEnabled()) {
                 this.WriteEvent(40196, CreateSourceString(source), CreateSourceString(stream));
             }
-            Trace.TraceInformation($"Stream closed: {stream} ... ({source}).");
         }
 
-        // 40197 - 40198 Available
+        [Event(40197, Message = "{0} - Received: {1}  Expected {2}.  Missing message.")]
+        public void MissingData(object source, DataMessage data, ulong expected) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40197, CreateSourceString(source), CreateSourceString(data), expected);
+            }
+            Trace.TraceError($"{data.SequenceNumber} received, {expected} expected. Missing message");
+        }
+
+        [Event(40198, Message = "{0} - Duplicate message received: {1}  Expected {2}.")]
+        public void DuplicateData(object source, DataMessage data, ulong expected) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40198, CreateSourceString(source), CreateSourceString(data), expected);
+            }
+            Trace.TraceError($"Duplicate message {data.SequenceNumber} received, {expected} expected.  Dropping.");
+        }
+
+
+        // 40199 - 40198 Available
 
         [Event(40199, Message = "Listener closed: Source: {0}.")]
         public void LocalListenerClosed(object source) {
             if (this.IsEnabled()) {
                 this.WriteEvent(40199, CreateSourceString(source));
             }
-            Trace.TraceInformation($"Listener closed ({source}).");
         }
 
+        // 40200 - 40220 Available
 
-        // 40200 - 40219 Available
-
-        [Event(40220, Level = EventLevel.Error, Message = "{0} No proxies installed on IoT Hub.")]
-        public void NoProxyInstalled(object source) {
+        [Event(40221, Message = "{0} A ping to {1} did not find {2} ({3}).")]
+        public void PingFailure(object source, object proxy, object address, object response) {
             if (this.IsEnabled()) {
-                this.WriteEvent(40220, CreateSourceString(source));
+                this.WriteEvent(40221, CreateSourceString(source), proxy, address);
             }
-            Trace.TraceError($"No proxies installed - Add proxies to IoT Hub! ({source})");
+            Trace.TraceInformation($"A ping to {proxy} did not find {address} ({response})...");
         }
 
-        [Event(40221, Level = EventLevel.Error, Message = "{0} Ping broadcast attempt {1} failed, remaining records {2}.")]
-        public void PingRetry(object source, int attempt, int remaining) {
+        [Event(40222, Message = "{0} start linking through {1} to {2}.")]
+        public void LinkCreate(object source, object proxy, object info) {
             if (this.IsEnabled()) {
-                this.WriteEvent(40221, CreateSourceString(source), attempt, remaining);
+                this.WriteEvent(40222, CreateSourceString(source), proxy, info);
             }
-            Trace.TraceWarning($"Ping broadcast attempt {attempt} failed - Remaining # of records to try: {remaining}...");
         }
 
-        // 40222 - 40247 Available
+        [Event(40223, Message = "{0} opening link through {1} to {2}.")]
+        public void LinkOpen(object source, object proxy, object info) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40223, CreateSourceString(source), proxy, info);
+            }
+        }
 
+        [Event(40224, Message = "{0} failed to link through {1} to {2} with exception: {3}")]
+        public void LinkFailure(object source, object proxy, object info, Exception exception) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40224, CreateSourceString(source), proxy, info, ExceptionToString(exception));
+            }
+            Trace.TraceError($"Failed to link through {proxy} to {info} ({exception.Message.ToString()})...");
+        }
+
+        [Event(40225, Message = "{0} linked through {1} to {2}.")]
+        public void LinkComplete(object source, object proxy, object info) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40225, CreateSourceString(source), proxy, info);
+            }
+        }
+
+        [Event(40226, Message = "{0} record {1} added...")]
+        public void RecordAdded(object source, object record) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40226, CreateSourceString(source), record);
+            }
+            Trace.TraceInformation($"Record {record} added...");
+        }
+
+        [Event(40227, Message = "{0} patching record {1} : {2}...")]
+        public void PatchingRecord(object source, object record, object patch) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40227, CreateSourceString(source), record, patch);
+            }
+        }
+
+        [Event(40228, Message = "{0} record {1} patched : {2}.")]
+        public void RecordPatched(object source, object record, object patch) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40228, CreateSourceString(source), record, patch);
+            }
+            Trace.TraceInformation($"Record {record} patched: {patch}...");
+        }
+
+        [Event(40229, Message = "{0} record {1} removed.")]
+        public void RecordRemoved(object source, object record) {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40229, CreateSourceString(source), record);
+            }
+            Trace.TraceInformation($"Record {record} removed...");
+        }
+
+        // 40230 - 40246 Available
+
+        [Event(40247, Message = "{0} destroyed.")]
+        public void LinkRemoved(object source)
+        {
+            if (this.IsEnabled()) {
+                this.WriteEvent(40247, CreateSourceString(source));
+            }
+        }
 
         [Event(40248, Level = EventLevel.Warning, Message = "{0} Retry {1} after exception: {2}")]
         public void Retry(object source, int k, Exception ex) {
@@ -163,31 +235,6 @@ namespace Microsoft.Azure.Devices.Proxy {
             }
             Trace.TraceError($"ERROR CONTINUE: {exception} ({source}).");
         }
-
-        [NonEvent]
-        public void GetTokenStart(object source) {
-            if (this.IsEnabled()) {
-                this.GetTokenStart(CreateSourceString(source));
-            }
-        }
-
-        [Event(40255, Level = EventLevel.Informational, Message = "GetToken start. Source: {0}")]
-        void GetTokenStart(string source) {
-            this.WriteEvent(40255, source);
-        }
-
-        [NonEvent]
-        public void GetTokenStop(DateTime tokenExpiry) {
-            if (this.IsEnabled()) {
-                this.GetTokenStop(DateTimeToString(tokenExpiry));
-            }
-        }
-
-        [Event(40256, Level = EventLevel.Informational, Message = "GetToken stop. New token expires at {0}.")]
-        void GetTokenStop(string tokenExpiry) {
-            this.WriteEvent(40256, tokenExpiry);
-        }
-
 
         [NonEvent]
         public ArgumentNullException ArgumentNull(string paramName, object source = null, EventLevel level = EventLevel.Error) {

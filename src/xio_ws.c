@@ -35,7 +35,10 @@ typedef struct xio_wsclient_t
     void* on_io_error_context;
     ON_IO_CLOSE_COMPLETE on_io_close_complete;
     void* on_io_close_complete_context;
+    IO_DOWORK dowork_cb;
+    CONCRETE_IO_HANDLE dowork_ctx;
 
+    bool recv_enabled;
     io_queue_t* inbound;     // Inbound buffer queue with received buffers
     io_queue_t* outbound;               // Outbound queue for send buffers
     int32_t last_error;  // Last error received in connect/disconnect path
@@ -54,10 +57,13 @@ static void xio_wsclient_free(
 )
 {
     dbg_assert_ptr(ws);
-    
+
     ws->destroy = true;
     if (!ws->closed)
         return; // Called again when closed..
+
+    ws->on_io_close_complete = NULL;
+    ws->on_io_error = NULL;
 
     if (ws->websocket)
     {
@@ -86,6 +92,7 @@ static void xio_wsclient_deliver_open_result(
 {
     /**/ if (ws->on_io_open_complete)
     {
+        ws->recv_enabled = true;
         ws->on_io_open_complete(ws->on_io_open_complete_context,
             ws->last_error != er_ok ? IO_OPEN_ERROR : IO_OPEN_OK);
     }
@@ -104,9 +111,11 @@ static void xio_wsclient_deliver_inbound_results(
 {
     io_queue_buffer_t* buffer;
     size_t size;
-    unsigned char* buf;
+    const uint8_t* buf;
 
     dbg_assert_ptr(ws);
+    if (ws->closed)
+        return;
 
     while (true)
     {
@@ -115,17 +124,23 @@ static void xio_wsclient_deliver_inbound_results(
             break;
 
         size = buffer->length;
-        buf = (unsigned char*)io_queue_buffer_to_ptr(buffer);
+        buf = (const uint8_t*)io_queue_buffer_to_ptr(buffer);
 
         /**/ if (ws->on_io_error && buffer->code != er_ok)
         {
             ws->on_io_error(
                 ws->on_io_error_context);
         }
-        else if (ws->on_bytes_received && size > 0)
+        else if (size > 0)
         {
-            ws->on_bytes_received(
-                ws->on_bytes_received_context, buf, size);
+            if (ws->on_bytes_received)
+            {
+                ws->on_bytes_received(
+                    ws->on_bytes_received_context, buf, size);
+            }
+
+            if (ws->dowork_cb)
+                ws->dowork_cb(ws->dowork_ctx);
         }
 
         io_queue_buffer_release(buffer);
@@ -133,7 +148,7 @@ static void xio_wsclient_deliver_inbound_results(
 }
 
 //
-// Scheduler task that delivers all send results 
+// Scheduler task that delivers all send results
 //
 static void xio_wsclient_deliver_outbound_results(
     xio_wsclient_t* ws
@@ -150,9 +165,13 @@ static void xio_wsclient_deliver_outbound_results(
 
         if (buffer->cb_ptr)
         {
-            ((ON_SEND_COMPLETE)buffer->cb_ptr)(buffer->ctx, 
+            ((ON_SEND_COMPLETE)buffer->cb_ptr)(buffer->ctx,
                 buffer->code != er_ok ? IO_SEND_ERROR : IO_SEND_OK);
         }
+
+        if (ws->dowork_cb)
+            ws->dowork_cb(ws->dowork_ctx);
+
         io_queue_buffer_release(buffer);
     }
 }
@@ -185,11 +204,13 @@ static void xio_wsclient_deliver_close_result(
     if (ws->on_io_error && ws->last_error != er_ok)
     {
         ws->on_io_error(ws->on_io_error_context);
+        ws->on_io_error = NULL;
     }
 
     if (ws->on_io_close_complete)
     {
         ws->on_io_close_complete(ws->on_io_close_complete_context);
+        ws->on_io_close_complete = NULL;
     }
 
     ws->closed = true;
@@ -217,7 +238,7 @@ static void xio_wsclient_on_begin_receive(
     dbg_assert_ptr(buf);
     dbg_assert_ptr(length);
 
-    result = io_queue_create_buffer(ws->inbound, NULL, 
+    result = io_queue_create_buffer(ws->inbound, NULL,
         DEFAULT_RECEIVE_BUFFER_SIZE, &buffer);
     if (result != er_ok)
     {
@@ -228,7 +249,7 @@ static void xio_wsclient_on_begin_receive(
     {
         *buf = io_queue_buffer_to_ptr(buffer);
         *length = DEFAULT_RECEIVE_BUFFER_SIZE;
-    } 
+    }
 }
 
 //
@@ -258,7 +279,7 @@ static void xio_wsclient_on_end_receive(
         log_error(ws->log, "Error during pal receive (%s).",
             prx_err_string(result));
     }
-    
+
     if (result == er_retry)
     {
         // Short cut, just release
@@ -329,7 +350,7 @@ static void xio_wsclient_on_end_send(
         log_error(ws->log, "Error during pal wsclient send (%s).",
             prx_err_string(result));
     }
-    
+
     buffer = io_queue_buffer_from_ptr(*buf);
     dbg_assert_ptr(buffer);
 
@@ -359,14 +380,14 @@ static void xio_wsclient_on_end_send(
 }
 
 //
-// Pal event callback 
+// Pal event callback
 //
 static void xio_wsclient_event_handler(
     void* context,
     pal_wsclient_event_t ev,
-    uint8_t** buffer, 
-    size_t* size,        
-    pal_wsclient_buffer_type_t* type,  
+    uint8_t** buffer,
+    size_t* size,
+    pal_wsclient_buffer_type_t* type,
     int32_t error
 )
 {
@@ -411,7 +432,7 @@ static void xio_wsclient_event_handler(
     }
 }
 
-// 
+//
 // Sends buffer by enqueing into the outbound queue
 //
 static int32_t xio_wsclient_send(
@@ -426,8 +447,9 @@ static int32_t xio_wsclient_send(
     io_queue_buffer_t* buffer;
     xio_wsclient_t* ws = (xio_wsclient_t*)handle;
 
-    if (!ws || !buf || !size)
-        return er_fault;
+    chk_arg_fault_return(handle);
+    chk_arg_fault_return(buf);
+    chk_arg_fault_return(size);
 
     result = io_queue_create_buffer(ws->outbound, buf, size, &buffer);
     if (result != er_ok)
@@ -439,8 +461,24 @@ static int32_t xio_wsclient_send(
     io_queue_buffer_set_ready(buffer);
 
     pal_wsclient_can_send(ws->websocket, true);
-    pal_wsclient_can_recv(ws->websocket, true);
+    if (ws->recv_enabled)
+    {
+        pal_wsclient_can_recv(ws->websocket, true);
+    }
     return er_ok;
+}
+
+//
+// Enable or disable receive
+//
+static int32_t xio_wsclient_recv(
+    CONCRETE_IO_HANDLE handle,
+    bool enabled
+)
+{
+    xio_wsclient_t* ws = (xio_wsclient_t*)handle;
+    ws->recv_enabled = enabled;
+    return pal_wsclient_can_recv(ws->websocket, enabled);
 }
 
 //
@@ -458,8 +496,7 @@ static int32_t xio_wsclient_open(
 {
     int32_t result;
     xio_wsclient_t* ws = (xio_wsclient_t*)handle;
-    if (!ws)
-        return er_fault;
+    chk_arg_fault_return(handle);
 
     if (!ws->scheduler)
     {
@@ -476,6 +513,7 @@ static int32_t xio_wsclient_open(
     ws->on_io_open_complete_context = on_io_open_complete_context;
     ws->on_io_error = on_io_error;
     ws->on_io_error_context = on_io_error_context;
+
     ws->last_error = er_ok;
 
     pal_wsclient_can_recv(ws->websocket, true);
@@ -492,16 +530,17 @@ static int32_t xio_wsclient_close(
 )
 {
     xio_wsclient_t* ws = (xio_wsclient_t*)handle;
-    if (!ws)
-        return er_fault;
+    chk_arg_fault_return(handle);
 
     ws->on_bytes_received = NULL;
     ws->on_io_open_complete = NULL;
     ws->on_io_error = NULL;
+    ws->dowork_cb = NULL;
 
     ws->on_io_close_complete = on_io_close_complete;
     ws->on_io_close_complete_context = on_io_close_complete_context;
     ws->last_error = er_ok;
+
     return pal_wsclient_disconnect(ws->websocket);
 }
 
@@ -515,12 +554,23 @@ static void xio_wsclient_destroy(
     xio_wsclient_t* ws = (xio_wsclient_t*)handle;
     if (!ws)
         return;
+    if (!ws->scheduler)
+    {
+        xio_wsclient_free(ws);
+        return;
+    }
+
+    // Stop any queued actions to ensure controlled free
+    prx_scheduler_clear(ws->scheduler, NULL, ws);
 
     // Detach any callbacks from buffers
     io_queue_abort(ws->outbound);
 
-    // Signal any in progress disconnect to also destroy
+    // Kick off free
     __do_next(ws, xio_wsclient_free);
+
+    // Controlled deliver close
+    __do_next(ws, xio_wsclient_deliver_close_result);
 }
 
 //
@@ -534,8 +584,8 @@ static CONCRETE_IO_HANDLE xio_wsclient_create(
     WSIO_CONFIG* ws_io_config = (WSIO_CONFIG*)io_create_parameters;
     xio_wsclient_t* ws;
 
-    if (!ws_io_config || !ws_io_config->host ||
-        !ws_io_config->protocol_name || !ws_io_config->relative_path)
+    if (!ws_io_config || !ws_io_config->hostname ||
+        !ws_io_config->protocol || !ws_io_config->resource_name)
         return NULL;
 
     ws = mem_zalloc_type(xio_wsclient_t);
@@ -552,43 +602,22 @@ static CONCRETE_IO_HANDLE xio_wsclient_create(
         if (result != er_ok)
             break;
 
-        result = pal_wsclient_create(
-            ws_io_config->protocol_name, ws_io_config->host,
-            (uint16_t)ws_io_config->port, ws_io_config->relative_path, 
+        result = pal_wsclient_create(ws_io_config->protocol,
+            ws_io_config->hostname, (uint16_t)ws_io_config->port,
+            ws_io_config->resource_name, true,
             xio_wsclient_event_handler, ws, &ws->websocket);
         if (result != er_ok)
             break;
 
         return ws;
-    } 
+    }
     while (0);
     xio_wsclient_destroy(ws);
     return NULL;
 }
 
 //
-// Set option - attaches the scheduler to the io handle
-// 
-static int32_t xio_wsclient_setoption(
-    CONCRETE_IO_HANDLE handle,
-    const char* option_name,
-    const void* buffer
-)
-{
-    int32_t result;
-    xio_wsclient_t* ws = (xio_wsclient_t*)handle;
-    if (!ws)
-        return er_fault;
-    if (0 == string_compare(option_name, xio_opt_scheduler))
-        result = prx_scheduler_create((prx_scheduler_t*)buffer, &ws->scheduler);
-    else
-        result = er_not_supported;
-
-    return result;
-}
-
-//
-// No op 
+// No op
 //
 static void xio_wsclient_dowork(
     CONCRETE_IO_HANDLE handle
@@ -599,7 +628,7 @@ static void xio_wsclient_dowork(
 }
 
 //
-// No op 
+// No op
 //
 static OPTIONHANDLER_HANDLE xio_wsclient_retrieve_option(
     CONCRETE_IO_HANDLE handle
@@ -607,6 +636,32 @@ static OPTIONHANDLER_HANDLE xio_wsclient_retrieve_option(
 {
     (void)handle;
     return NULL;
+}
+
+//
+// Set option - attaches the scheduler to the io handle
+//
+static int32_t xio_wsclient_setoption(
+    CONCRETE_IO_HANDLE handle,
+    const char* option_name,
+    const void* buffer
+)
+{
+    xio_wsclient_t* ws = (xio_wsclient_t*)handle;
+    chk_arg_fault_return(handle);
+
+    /**/ if (0 == string_compare(option_name, xio_opt_scheduler))
+        return prx_scheduler_create((prx_scheduler_t*)buffer, &ws->scheduler);
+    else if (0 == string_compare(option_name, xio_opt_flow_ctrl))
+        return xio_wsclient_recv(handle, *((uint32_t*)buffer) != 0);
+    else if (0 == string_compare(option_name, xio_opt_dowork_cb))
+        ws->dowork_cb = (IO_DOWORK)buffer;
+    else if (0 == string_compare(option_name, xio_opt_dowork_ctx))
+        ws->dowork_ctx = (CONCRETE_IO_HANDLE)buffer;
+    else
+        return er_not_supported;
+
+    return er_ok;
 }
 
 //

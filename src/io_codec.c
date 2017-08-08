@@ -4,10 +4,11 @@
 #include "util_mem.h"
 #include "io_codec.h"
 #include "util_string.h"
+
 #include "cmp.h"
 #include "parson.h"
-#include "azure_c_shared_utility/base64.h"
 
+#include "azure_c_shared_utility/base64.h"
 
 //
 // Initialize a context object from a stream
@@ -61,8 +62,8 @@ static int32_t json_init_ctx(
         }
 
         if (avail > 0x1000)
-            avail = 0x1000; 
-        
+            avail = 0x1000;
+
         tmp = (char*)mem_realloc(buffer, buf_len + avail + 1);
         if (!tmp)
         {
@@ -74,7 +75,7 @@ static int32_t json_init_ctx(
             stream, &buffer[buf_len], avail, &read);
         if (result != er_ok)
             break;
-      
+
         // dbg_assert(read == avail, "Not all read, but success");
         buf_len += read;
     }
@@ -119,13 +120,13 @@ static int32_t json_fini_ctx(
             result = er_writing;
             break;
         }
-        
+
         result = io_stream_reset(stream);
         if (result != er_ok)
             break;
-        result = stream->write(stream->context, buffer, buf_size-1);  // omit '\0'
+        result = io_stream_write(stream, buffer, buf_size-1);  // omit '\0'
         break;
-    } 
+    }
     while (0);
     if (buffer)
         mem_free(buffer);
@@ -167,7 +168,7 @@ static int32_t json_set_number(
 }
 
 //
-// Writes a number value 
+// Writes a number value
 //
 static int32_t json_write_number(
     io_codec_ctx_t* ctx,
@@ -261,7 +262,7 @@ static int32_t json_append_string(
 )
 {
     JSON_Array* arr;
-    
+
     arr = json_value_get_array((JSON_Value*)ctx->context);
     if (JSONSuccess != json_array_append_string(arr, value))
         return er_out_of_memory;
@@ -278,7 +279,7 @@ static int32_t json_set_string(
 )
 {
     JSON_Object* obj;
-    
+
     obj = json_value_get_object((JSON_Value*)ctx->context);
     if (JSONSuccess != json_object_set_string(obj, name, value))
         return er_out_of_memory;
@@ -312,6 +313,9 @@ static int32_t json_write_bin(
 {
     int32_t result;
     STRING_HANDLE base64;
+
+    if (!size)
+        return json_write_string(ctx, name, "");
 
     base64 = Base64_Encode_Bytes((const unsigned char*)value, size);
     if (!base64)
@@ -487,7 +491,7 @@ static int32_t json_get_number(
 }
 
 //
-// Reads a number value 
+// Reads a number value
 //
 static int32_t json_read_number(
     io_codec_ctx_t* ctx,
@@ -567,7 +571,7 @@ static int32_t json_get_bool(
 {
     JSON_Value* val;
     JSON_Object* obj;
-    
+
     obj = json_value_get_object((JSON_Value*)ctx->context);
     val = json_object_get_value(obj, name);
     if (!val || JSONBoolean != json_value_get_type(val))
@@ -637,9 +641,10 @@ static int32_t json_read_bin(
 {
     int32_t result;
     JSON_Value* val;
+    const char* string_value;
     size_t len;
     BUFFER_HANDLE decoded;
-    
+
     val = (JSON_Value*)ctx->context;
     if (!name)
         val = json_array_get_value(json_value_get_array(val), ctx->index++);
@@ -648,7 +653,16 @@ static int32_t json_read_bin(
     if (!val || JSONString != json_value_get_type(val))
         return er_invalid_format;
 
-    decoded = Base64_Decoder(json_value_get_string(val));
+    string_value = json_value_get_string(val);
+    dbg_assert_ptr(string_value);
+    if (!strlen(string_value))
+    {
+        *value = NULL;
+        *size = 0;
+        return er_ok;
+    }
+
+    decoded = Base64_Decoder(string_value);
     if (!decoded)
         return er_out_of_memory;
     do
@@ -666,7 +680,7 @@ static int32_t json_read_bin(
         memcpy(*value, BUFFER_u_char(decoded), *size);
         result = er_ok;
         break;
-    } 
+    }
     while (0);
     BUFFER_delete(decoded);
     return result;
@@ -706,7 +720,7 @@ static int32_t json_read_object(
 {
     JSON_Value* val;
     JSON_Value_Type type;
-    
+
     val = (JSON_Value*)ctx->context;
     if (!name)
     {
@@ -752,7 +766,7 @@ static int32_t json_read_array(
 {
     JSON_Value* val;
     JSON_Array* arr;
-    
+
     val = (JSON_Value*)ctx->context;
     if (!name)
         val = json_array_get_value(json_value_get_array(val), ctx->index++);
@@ -824,7 +838,7 @@ static int32_t cmp_ctx_get_err(
     if (ctx->error == 0) /* ERROR_NONE */
         return er_ok;
 
-    log_error(NULL, "Message Pack context with error %s", cmp_strerror(ctx));
+    log_error(NULL, "Message Pack error '%s' occurred.", cmp_strerror(ctx));
 
     switch (ctx->error)
     {
@@ -843,7 +857,8 @@ static int32_t cmp_ctx_get_err(
     case 13  /* INVALID_TYPE_ERROR */              : return er_arg;
     case 14  /* LENGTH_READING_ERROR */            : return er_invalid_format;
     case 15  /* LENGTH_WRITING_ERROR */            : return er_writing;
-    case 16                                        : return er_fault;
+    case 16  /* SKIP_DEPTH_LIMIT_EXCEEDED_ERROR */ : return er_fault;
+    case 17                                        : return er_fault;
     case cmp_out_of_memory_error                   : return er_out_of_memory;
     }
     return er_unknown;
@@ -859,7 +874,7 @@ static bool cmp_ctx_set_err(
 {
     switch (error)
     {
-    case er_ok:                                     ctx->error = 0;  
+    case er_ok:                                     ctx->error = 0;
         return true;
     case er_arg:                                    ctx->error = 1;  break;
     case er_writing:                                ctx->error = 10; break;
@@ -900,7 +915,7 @@ static size_t cmp_stream_write(
 )
 {
     io_stream_t* stream = (io_stream_t*)ctx->buf;
-    return cmp_ctx_set_err(ctx, io_stream_write(stream, data, count)) ? 
+    return cmp_ctx_set_err(ctx, io_stream_write(stream, data, count)) ?
         count : 0;
 }
 
@@ -946,7 +961,7 @@ static int32_t mpack_write_uinteger(
 }
 
 //
-// Writes a message pack decimal value 
+// Writes a message pack decimal value
 //
 static int32_t mpack_write_decimal(
     io_codec_ctx_t* ctx,
@@ -1136,7 +1151,7 @@ static int32_t mpack_read_uinteger(
 }
 
 //
-// Reads a message pack encoded decimal value 
+// Reads a message pack encoded decimal value
 //
 static int32_t mpack_read_decimal(
     io_codec_ctx_t* ctx,
@@ -1189,7 +1204,7 @@ static int32_t mpack_read_string(
         return result;
     do
     {
-        if (*size != len32 + 1)
+        if (*size != (len32 + 1))
         {
             result = er_out_of_memory;
             break;
@@ -1203,7 +1218,7 @@ static int32_t mpack_read_string(
 
         ((char*)(*value))[len32] = '\0';
         return er_ok;
-    } 
+    }
     while (0);
     allocator(ctx, 0, (void**)value, size);
     return result;
@@ -1226,6 +1241,12 @@ static int32_t mpack_read_bin(
     mpack_read_begin(ctx);
     if (!cmp_read_bin_size(cmp_ctx, &len32))
         return cmp_ctx_get_err(cmp_ctx);
+    if (!len32)
+    {
+        *value = NULL;
+        *size = 0;
+        return er_ok;
+    }
 
     result = allocator(ctx, len32, value, size);
     if (result != er_ok)
@@ -1244,7 +1265,7 @@ static int32_t mpack_read_bin(
             break;
         }
         return er_ok;
-    } 
+    }
     while (0);
     allocator(ctx, 0, (void**)value, size);
     return result;
@@ -1320,8 +1341,13 @@ static int32_t mpack_read_type_end(
     io_codec_ctx_t* ctx
 )
 {
-    dbg_assert(ctx->index == 0, "Missing properties");
-    (void)ctx;
+    cmp_object_t cmp_obj;
+    cmp_ctx_t* cmp_ctx = (cmp_ctx_t*)ctx->context;
+    while(ctx->index-- > 0)
+    {
+        if (!cmp_skip_object(cmp_ctx, &cmp_obj))
+            return cmp_ctx_get_err(cmp_ctx);
+    }
     return er_ok;
 }
 
@@ -1367,6 +1393,7 @@ static int32_t mpack_init_ctx(
 
     cmp_ctx->buf = stream;
     cmp_ctx->read = cmp_stream_read;
+    cmp_ctx->skip = NULL; // Use read instead
     cmp_ctx->write = cmp_stream_write;
 
     ctx->context = cmp_ctx;
@@ -1401,7 +1428,7 @@ static io_codec_t* mpack_codec(
 {
     static io_codec_t codec = {
         io_codec_mpack,
-        
+
         mpack_write_integer,
         mpack_write_uinteger,
         mpack_write_decimal,
@@ -1613,7 +1640,7 @@ int32_t io_decode_STRING_HANDLE(
         crt_free(string_mem);
         return er_out_of_memory;
     }
-    
+
     *decoded = string;
     return er_ok;
 }
@@ -1671,7 +1698,7 @@ io_codec_t* io_codec_by_id(
         return mpack_codec();
     case io_codec_json:
         return json_codec();
-    
+
         //...
 
     default:

@@ -5,17 +5,16 @@
 # Unit test includes
 #
 set(libproxy_ut_include
-    ${_PROJECT_INC} 
-    ${_PROJECT_SRC} 
-    ${_UAMQP_INC} 
-    ${_UMQTT_INC} 
-    ${_IOTSDK_INC} 
-    ${_HASHTABLE_ROOT} 
+    ${_PROJECT_INC}
+    ${_PROJECT_SRC}
+    ${_UMQTT_INC}
+    ${_IOTSDK_INC}
+    ${_HASHTABLE_ROOT}
     ${_PARSON_ROOT}
     ${_CMP_ROOT}
     ${_ZLOG_INC}
-    ${_UMOCKC_INC} 
-    ${_TRUNNER_INC} 
+    ${_UMOCKC_INC}
+    ${_TRUNNER_INC}
     ${_CTEST_INC}
 )
 
@@ -36,8 +35,11 @@ set(_PROXY_UNITS_UNDER_TEST
     prx_client
     prx_server
     prx_buffer
+    prx_browse
+    prx_log
     prx_ns
     prx_sched
+    io_browse
     io_codec
     io_mqtt
     io_ref
@@ -49,12 +51,11 @@ set(_PROXY_UNITS_UNDER_TEST
     io_transport
     io_ws
     pal
-    util_handle
     util_misc
     util_signal
     util_string
     util_stream
-    util_log
+    util_ringbuf
     util_mem
     xio_sk
     xio_ws
@@ -63,7 +64,7 @@ set(_PROXY_UNITS_UNDER_TEST
 compileAsC99()
 
 #
-# Builds a unit tests for each component 
+# Builds a unit tests for each component
 #
 foreach(unit ${_PROXY_UNITS_UNDER_TEST})
     set(${unit}_ut_test_includes ${libproxy_ut_include})

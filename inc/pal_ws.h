@@ -8,7 +8,7 @@
 #include "prx_types.h"
 
 //
-// Platform specific websocket client 
+// Platform specific websocket client
 //
 typedef struct pal_wsclient pal_wsclient_t;
 
@@ -42,7 +42,7 @@ typedef enum pal_wsclient_buffer_type
 pal_wsclient_buffer_type_t;
 
 //
-// Called by when event on websocket occurred to service protocol  
+// Called by when event on websocket occurred to service protocol
 //
 typedef void (*pal_wsclient_event_handler_t)(
     void* context,
@@ -56,11 +56,12 @@ typedef void (*pal_wsclient_event_handler_t)(
 //
 // Create free threaded websocket client
 //
-decl_public_7(int32_t, pal_wsclient_create,
+decl_public_8(int32_t, pal_wsclient_create,
     const char*, protocol_name,
     const char*, host,
     uint16_t, port,
     const char*, path,
+    bool, secure,
     pal_wsclient_event_handler_t, callback,
     void*, callback_context,
     pal_wsclient_t**, wsclient

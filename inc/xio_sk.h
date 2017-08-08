@@ -10,6 +10,9 @@
 // Defined option strings for xio layer
 //
 #define xio_opt_scheduler "scheduler"
+#define xio_opt_flow_ctrl "xon"
+#define xio_opt_dowork_cb "doworkcb"
+#define xio_opt_dowork_ctx "doworkctx"
 
 //
 // Passed to xio for socket interface
@@ -18,7 +21,7 @@ typedef struct xio_sk_config
 {
     const char* hostname;
     int32_t port;
-    void* reserved; 
+    void* reserved;
 }
 xio_sk_config_t;
 
